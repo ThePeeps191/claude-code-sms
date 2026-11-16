@@ -12,6 +12,8 @@ export type Action =
   | { type: "mode"; mode: "home" | "away" | "paused" | "resume"; until?: string }
   | { type: "watch"; target: SessionRef; level: "watched" | "muted" | "default" }
   | { type: "capture_start"; target: SessionRef | null }
+  | { type: "capture_send"; target: SessionRef | null }
+  | { type: "capture_discard" }
   | { type: "more" }
   | { type: "model"; which: "both" | "router" | "summarizer"; model?: string }
   | { type: "confirm"; yes: boolean }

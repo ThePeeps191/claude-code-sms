@@ -237,7 +237,7 @@ async function configCmd(args: string[]): Promise<number> {
 async function launchClaude(args: string[]): Promise<number> {
   const claude = findClaude(safeCfg()?.system.claudePath);
   const spec = readInstall().channelSpec ?? CHANNEL_SPEC;
-  const claudeArgs = ["--dangerously-load-development-channels", spec, ...args];
+  const claudeArgs = [`--dangerously-load-development-channels=${spec}`, ...args];
   if (!(await hubHealthy()).ok) {
     const r = await startHub();
     if (!r.ok) warn("The hub isn't running, so texts won't flow until it is (ccsms start).");

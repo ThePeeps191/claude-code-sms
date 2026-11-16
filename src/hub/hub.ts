@@ -458,9 +458,12 @@ export class Hub {
     if (!s || s.status !== "idle") return;
     if ((r.lastEventAt ?? 0) > stopAt) return; // woke up again
     if (!this.shouldNotify(s, "T3")) { r.turnStart = undefined; return; }
+    // The turn ended on a texted question: the question already went out; no "done" yet.
+    const pq = s.pending_question ? safeJson(s.pending_question) : null;
+    if (pq?.via === "sms" && pq.at >= (r.turnStart ?? stopAt - 3600_000)) { r.turnStart = undefined; return; }
     // An sms_reply after the last substantive work already delivered the result.
     if (r.lastReplyAt && r.lastReplyAt >= (r.lastSubstantiveAt ?? 0) && r.lastReplyAt >= (r.turnStart ?? 0)) { r.turnStart = undefined; return; }
-    const dur = r.turnStart ? ` ${fmtDuration(stopAt - r.turnStart)}` : "";
+    const dur = r.turnStart && stopAt - r.turnStart >= 60_000 ? ` ${fmtDuration(stopAt - r.turnStart)}` : "";
     r.turnStart = undefined;
     const plain = stripMarkdown(r.lastStopMessage ?? "");
     let summary = firstParagraph(plain);
@@ -521,17 +524,37 @@ export class Hub {
       this.store.set("optOutWarning", { at: Date.now(), from: msg.from, keyword: text });
       return;
     }
-    // Capture mode takes every text verbatim, immediately (no merging).
+    // Commands (and every text while capturing) are handled immediately and in order;
+    // other texts are merged for a moment because phones split long messages.
     const st = this.sender(msg.from);
-    if (st.capture?.active) { void this.processText(msg.from, msg.text); return; }
+    const immediate = st.capture?.active || /^(send|discard)$/i.test(text) || parseCommand(text, { pendingChoice: Boolean(st.choice), pendingConfirm: Boolean(st.confirm) }) !== null;
+    if (immediate) {
+      this.flushDebounce(msg.from);
+      this.enqueueText(msg.from, msg.text);
+      return;
+    }
     const d = this.debounce.get(msg.from);
     if (d) { clearTimeout(d.timer); d.texts.push(msg.text); }
     const entry = d ?? { texts: [msg.text], timer: null as any };
-    entry.timer = setTimeout(() => {
-      this.debounce.delete(msg.from);
-      void this.processText(msg.from, entry.texts.join("\n"));
-    }, this.debounceMs);
+    entry.timer = setTimeout(() => this.flushDebounce(msg.from), this.debounceMs);
     this.debounce.set(msg.from, entry);
+  }
+
+  private flushDebounce(from: string) {
+    const d = this.debounce.get(from);
+    if (!d) return;
+    clearTimeout(d.timer);
+    this.debounce.delete(from);
+    this.enqueueText(from, d.texts.join("\n"));
+  }
+
+  private queues = new Map<string, Promise<void>>();
+  /** Process texts from one sender strictly in arrival order. */
+  enqueueText(from: string, text: string): Promise<void> {
+    const prev = this.queues.get(from) ?? Promise.resolve();
+    const next = prev.then(() => this.processText(from, text)).catch((e) => log.error("processing a text failed", e));
+    this.queues.set(from, next);
+    return next;
   }
 
   async processText(from: string, rawText: string): Promise<void> {
@@ -619,6 +642,23 @@ export class Hub {
       const s = this.store.session(st.sticky.sessionId);
       if (s) lines.push(`Sticky target: ${s.num} ${s.name}, set ${fmtDuration(Date.now() - st.sticky.at)} ago`);
     }
+    // What the hub is waiting for from this user.
+    const lastOut = [...this.store.recentMessages(from, 6)].reverse().find((m) => m.direction === "out");
+    if (st.confirm && st.confirm.expires > Date.now()) {
+      lines.push(`Hub is waiting for a yes/no confirmation (${st.confirm.kind}) to its last message: ${JSON.stringify(lastOut?.body ?? "")}`);
+    }
+    if (st.choice && st.choice.expires > Date.now()) {
+      const c = st.choice;
+      const opts = c.kind === "route"
+        ? (c.options as number[]).map((n) => `${n} = session ${n} ${this.live().find((x) => x.num === n)?.name ?? ""}`.trim())
+        : (c.options as string[]).map((o, i) => `${i + 1} = ${o}`);
+      const what = c.kind === "route" ? "which session should get the user's text" : c.kind === "answer" ? "an answer to a session's question" : "an answer to a question on a session's screen";
+      lines.push(`Hub is waiting for a numbered choice (${what}): ${opts.join("; ")}`);
+    }
+    if (st.capture?.parts.length) {
+      const t = st.capture.target ? this.store.session(st.capture.target)?.name : null;
+      lines.push(`A captured multi-text prompt (${st.capture.parts.length} parts) is ${st.capture.active ? "still being collected" : "waiting to be sent"}${t ? `, proposed target ${t}` : ""}.`);
+    }
     const recent = this.store.recentMessages(from, 10);
     if (recent.length) {
       lines.push("Recent messages (oldest first):");
@@ -700,8 +740,21 @@ export class Hub {
       case "lockdown":
         this.store.set("lockdown", true);
         return this.reply(from, "Locked down. Texts are ignored until you run 'ccsms unlock' at the computer.", 1);
-      case "confirm": return this.onConfirm(from, st, a.yes);
-      case "choice": return this.onChoice(from, st, a.n);
+      case "confirm":
+        if (!st.confirm) return this.reply(from, "Nothing is waiting for a yes/no right now.", 1);
+        return this.onConfirm(from, st, a.yes);
+      case "choice":
+        if (!st.choice) return this.reply(from, "Nothing is waiting for a choice right now.", 1);
+        return this.onChoice(from, st, a.n);
+      case "capture_send": {
+        const cap = st.capture;
+        if (!cap?.parts.length) return this.reply(from, "No captured prompt to send. Text prompt to start one.", 1);
+        this.setSender(from, { ...st, capture: undefined, confirm: undefined, choice: undefined });
+        return this.deliver(from, a.target, cap.parts.join("\n\n"), "prompt");
+      }
+      case "capture_discard":
+        this.setSender(from, { ...st, capture: undefined, confirm: st.confirm?.kind === "capture_send" ? undefined : st.confirm });
+        return this.reply(from, "Discarded.", 1);
       case "reply": {
         if (a.clarifyText) {
           const opts = this.live().filter((s) => s.inbound && this.bridges.has(s.id)).map((s) => s.num);
@@ -812,7 +865,7 @@ export class Hub {
         if (live >= this.cfg.spawn.max) return this.reply(from, `Already ${live} sessions (max ${this.cfg.spawn.max}).`, 1);
         const args = c.data.worktree ? ["--worktree"] : [];
         const r = await this.launchSession(c.data.dir, [...args, c.data.prompt], undefined);
-        return this.reply(from, r.ok ? `Started ${r.name}. I'll text when it finishes.` : `Couldn't start it: ${r.error}`, 1);
+        return this.reply(from, r.ok ? `Started a session in ${shortPath(c.data.dir)}. I'll text when it finishes.` : `Couldn't start it: ${r.error}`, 1);
       }
     }
   }
@@ -909,15 +962,20 @@ export class Hub {
     let tname = `ccsms-${base}`;
     for (let i = 2; tmux.sessionExists(tname) && i < 50; i++) tname = `ccsms-${base}-${i}`;
     const claude = findClaude(this.cfg.system.claudePath);
-    const cmd = [claude, "--dangerously-load-development-channels", this.channelSpec(), ...claudeArgs];
+    const cmd = [claude, `--dangerously-load-development-channels=${this.channelSpec()}`, ...claudeArgs];
     const pane = tmux.newDetachedSession(tname, dir, cmd, { CCSMS_CHANNEL: "1" });
     if (!pane) return { ok: false, error: "tmux failed to start" };
     // Accept the development-channels warning (the user opted into starting sessions by text).
     const accepted = await tmux.waitForAndPress(pane, /local development/i, ["Enter"], 30_000);
     if (!accepted) {
       const screen = tmux.capturePane(pane, 30) ?? "";
-      if (/trust/i.test(screen)) return { ok: false, error: "the folder isn't trusted yet; open it once with claude at the computer" };
+      if (/trust/i.test(screen)) {
+        tmux.sendKeys(pane, "Escape");
+        return { ok: false, error: "the folder isn't trusted yet; open it once with claude at the computer" };
+      }
     }
+    await Bun.sleep(2500);
+    if (!tmux.paneAlive(pane)) return { ok: false, error: "claude exited right after starting (try it at the computer: claude-sms)" };
     return { ok: true, name: base };
   }
 

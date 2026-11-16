@@ -110,7 +110,7 @@ describe("hub", () => {
     await Bun.sleep(20);
     await flush(hub);
     expect(sent.length).toBe(1);
-    expect(sent[0].body).toMatch(/^webapp: DONE .*Added the toggle\. Tests pass\. Reply to continue\.$/);
+    expect(sent[0].body).toMatch(/^webapp: DONE\. Added the toggle\. Tests pass\. Reply to continue\.$/);
   });
 
   test("home: no DONE unless the session is watched", async () => {
@@ -170,6 +170,21 @@ describe("hub", () => {
     expect(sent.at(-1)!.body).toContain("3 parts");
     await text(hub, "y");
     expect(b.got.find((m) => m.t === "deliver")?.content).toBe("Refactor auth.\n\nstop using redux\n\nKeep tests green.");
+    expect(routerCalls).toEqual([]);
+  });
+
+  test("rapid texts right after 'prompt' are captured, not merged into the command", async () => {
+    const { hub, sent, routerCalls } = makeHub();
+    hub.debounceMs = 50;
+    const b = bridge(hub, "s1");
+    const t = (x: string) => hub.onInbound({ kind: "message", id: x, from: OWNER, to: "", text: x, mediaCount: 0 });
+    t("prompt"); t("Create d.txt."); t("Content: captured"); t("send");
+    await Bun.sleep(200); await flush(hub);
+    expect(sent.at(-1)!.body).toContain("Send to");
+    t("y");
+    await Bun.sleep(100);
+    expect(b.got.find((m) => m.t === "deliver")?.content).toContain("Create d.txt.");
+    expect(b.got.find((m) => m.t === "deliver")?.content).toContain("Content: captured");
     expect(routerCalls).toEqual([]);
   });
 

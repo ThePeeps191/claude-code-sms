@@ -26,14 +26,27 @@ export function capturePane(pane: string, scrollback = 60): string | null {
 }
 
 /** Last N meaningful lines of a pane, with box-drawing and blank lines removed. */
-export function peekPane(pane: string, lines = 12): string | null {
+export function peekPane(pane: string, lines = 8): string | null {
   const raw = capturePane(pane, 80);
   if (raw === null) return null;
-  const cleaned = raw
-    .split("\n")
-    .map((l) => l.replace(/[─-╿▀-▟]/g, " ").replace(/\s+/g, " ").trim())
-    .filter((l) => l && !/^[>\-|.:·•\s]*$/.test(l));
+  let all = raw.split("\n");
+  // Claude Code's screen ends with: conversation, a rule, the input box, a rule, the status bar.
+  // Keep only what's above the input box when we can find it.
+  const promptIdx = findLastIndex(all, (l) => /^\s*[❯>]\s/.test(l) || /^\s*[❯>]\s*$/.test(l));
+  if (promptIdx > 0) {
+    const ruleIdx = findLastIndex(all.slice(0, promptIdx), (l) => /^[\s─━]{20,}$/.test(l) && /[─━]/.test(l));
+    all = all.slice(0, ruleIdx > 0 ? ruleIdx : promptIdx);
+  }
+  const cleaned = all
+    .map((l) => l.replace(/[─-╿▀-▟▐-▟▐▛▜▝▘▙▟]/g, " ").replace(/\s+/g, " ").trim())
+    .filter((l) => l.length > 1 && !/^[>\-|.:·•\s]*$/.test(l))
+    .filter((l) => !/Channels \(experimental\)|restart without --dangerously|^stop$|auto mode on|shift\+tab|\? for shortcuts/i.test(l));
   return cleaned.slice(-lines).join("\n");
+}
+
+function findLastIndex<T>(arr: T[], pred: (x: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
+  return -1;
 }
 
 export function sendKeys(pane: string, ...keys: string[]): boolean {
