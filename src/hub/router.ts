@@ -57,7 +57,7 @@ export const ROUTER_SCHEMA = {
   additionalProperties: false,
 };
 
-export const SUMMARIZER_PROMPT = `Rewrite a coding session's final report as one SMS of at most 300 characters, plain characters only, no markdown, emoji, curly quotes or dashes other than '-'. Order: the outcome; anything the user must do or decide; one key number if useful. Keep any question the report asks the user. Omit file paths, code and process details. Output only the SMS.`;
+export const SUMMARIZER_PROMPT = `Rewrite a coding session's final report as one SMS of at most 250 characters, plain characters only, no markdown, emoji, curly quotes or dashes other than '-'. Order: the outcome; anything the user must do or decide; one key number if useful. Keep any question the report asks the user. Omit file paths, code and process details. Output only the SMS.`;
 
 /** Locate the claude executable. The hub runs under launchd with a minimal PATH. */
 export function findClaude(configured?: string): string {

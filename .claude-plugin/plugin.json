@@ -1,7 +1,7 @@
 {
   "name": "sms",
   "displayName": "claude-code-sms",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "SMS front door for Claude Code: get texts when sessions finish or need you, and text back prompts, answers and follow-ups from any phone.",
   "author": { "name": "ThePeeps191", "url": "https://github.com/ThePeeps191" },
   "homepage": "https://github.com/ThePeeps191/claude-code-sms",

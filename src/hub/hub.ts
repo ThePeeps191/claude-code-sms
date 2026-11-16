@@ -52,6 +52,7 @@ interface Runtime {
   lastFailureAt?: number;
   lastStopMessage?: string;
   lastDoneAt?: number;
+  haltedAt?: number;
 }
 
 const MODE_NOTICES: Record<Mode, string> = {
@@ -477,6 +478,7 @@ export class Hub {
     const r = this.rt(id);
     if (!s || s.status !== "idle") return;
     if ((r.lastEventAt ?? 0) > stopAt) return; // woke up again
+    if (r.haltedAt && r.haltedAt >= (r.turnStart ?? 0)) { r.turnStart = undefined; return; } // the user interrupted it
     const textedSinceDone = Boolean(r.lastInboundAt && r.lastInboundAt > (r.lastDoneAt ?? 0));
     if (!this.shouldNotify(s, "T3") && !textedSinceDone) { r.turnStart = undefined; return; }
     // The turn ended on a texted question: the question already went out; no "done" yet.
@@ -488,7 +490,7 @@ export class Hub {
     r.turnStart = undefined;
     const plain = stripMarkdown(r.lastStopMessage ?? "");
     let summary = firstParagraph(plain);
-    if (summary.length > 300) summary = (await this.dispatcher.summarize(plain).catch(() => null)) ?? summary.slice(0, 280) + "...";
+    if (summary.length > 250) summary = (await this.dispatcher.summarize(plain).catch(() => null)) ?? summary.slice(0, 240) + "...";
     this.outbox.cancelPending((i) => i.sessionId === id && i.tier === "T5");
     r.lastDoneAt = Date.now();
     const body = `${s.name}: DONE${dur}. ${summary || "Finished."}${summary.endsWith("?") ? "" : " Reply to continue."}`.replace(/\s+/g, " ");
@@ -891,6 +893,7 @@ export class Hub {
       case "halt": {
         const s = this.store.session(c.data);
         if (!s?.tmux_pane || !tmux.sendKeys(s.tmux_pane, "Escape")) return this.reply(from, "Couldn't interrupt it.", 1);
+        this.rt(s.id).haltedAt = Date.now();
         return this.reply(from, `Interrupted ${s.name}.`, 1);
       }
       case "resume": {
@@ -1065,18 +1068,23 @@ export class Hub {
         destinations: destinationsFor(this.cfg.owners.numbers),
         profileId: this.cfg.provider.messagingProfileId || undefined,
       } as any);
-      if (updates.messagingProfileId && updates.messagingProfileId !== this.cfg.provider.messagingProfileId) {
-        const next = structuredClone(this.cfg);
-        next.provider.messagingProfileId = updates.messagingProfileId;
-        saveConfig(next, this.configFile);
-        this.cfg = next;
-        this.cfgMtime = mtime(this.configFile);
-      }
+      this.persistProviderUpdates(updates);
       this.store.set("webhook", { url, at: Date.now(), ok: true });
       log.info(`webhook set: ${url}`);
     } catch (e: any) {
+      if (e?.partial) this.persistProviderUpdates(e.partial);
       this.store.set("webhook", { url, at: Date.now(), ok: false, error: String(e?.message ?? e) });
       log.error("could not configure the provider webhook", e?.message ?? e);
+    }
+  }
+
+  private persistProviderUpdates(updates: Record<string, string>) {
+    if (updates.messagingProfileId && updates.messagingProfileId !== this.cfg.provider.messagingProfileId) {
+      const next = structuredClone(this.cfg);
+      next.provider.messagingProfileId = updates.messagingProfileId;
+      saveConfig(next, this.configFile);
+      this.cfg = next;
+      this.cfgMtime = mtime(this.configFile);
     }
   }
 

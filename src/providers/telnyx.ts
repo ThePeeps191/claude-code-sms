@@ -175,7 +175,13 @@ export class TelnyxProvider implements SmsProvider {
       if (!profileId) throw new ProviderError("Telnyx did not return a messaging profile id.");
     }
     if (owned.messagingProfileId !== profileId) {
-      await this.call("PATCH", `/phone_numbers/${owned.id}/messaging`, { messaging_profile_id: profileId });
+      try {
+        await this.call("PATCH", `/phone_numbers/${owned.id}/messaging`, { messaging_profile_id: profileId });
+      } catch (e: any) {
+        // Keep the profile id so a retry reuses it instead of creating another profile.
+        e.partial = { messagingProfileId: profileId };
+        throw e;
+      }
     }
     return { messagingProfileId: profileId };
   }

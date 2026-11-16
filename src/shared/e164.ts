@@ -33,7 +33,7 @@ export function isE164(s: string): boolean {
   return /^\+[1-9]\d{7,14}$/.test(s);
 }
 
-/** "+14035550123" -> "...0123" for logs/UI. Never log full numbers at info level. */
+/** "+12125550123" -> "...0123" for logs/UI. Never log full numbers at info level. */
 export function maskNumber(n: string): string {
   return n.length > 4 ? `...${n.slice(-4)}` : n;
 }

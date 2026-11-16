@@ -105,6 +105,16 @@ A typical day of finishes, a question and a few replies is a few cents. The dail
 - **Your secrets stay local.** Credentials live in `~/.claude-code-sms/secrets.env` (mode 600) and are entered only at a hidden prompt, never in chat.
 - **What leaves your machine:** message text passes through your SMS provider, and short routing context goes to Claude.
 
+## Status
+
+v0.1. Verified end to end on macOS with real Claude Code sessions: delivery, DONE texts, the dispatcher, questions, capture, peek/halt, starting and resuming sessions, the quick tunnel, the installer and self-update.
+
+Still to verify against live services:
+- real SMS through Telnyx and Twilio (the provider code is unit-tested against their documented formats);
+- the Linux systemd service.
+
+Reports and PRs are welcome.
+
 ## Troubleshooting
 
 Run `ccsms doctor`: it checks everything and prints the fix for each problem. More help is in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md), or ask Claude: `/sms:setup why didn't I get a text?`

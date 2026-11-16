@@ -51,7 +51,9 @@ hub.recoverAfterRestart();
 
 let tunnel: QuickTunnel | null = null;
 if (hub.cfg.tunnel.kind === "quick" && hub.provider.id !== "fake") {
-  tunnel = new QuickTunnel(PUBLIC_PORT, (url) => void hub.configureWebhook(url), process.env.CCSMS_CLOUDFLARED || findCloudflared());
+  // Wait a moment before registering a fresh quick-tunnel URL: its DNS record takes a few
+  // seconds to appear, and an early lookup can cache "not found".
+  tunnel = new QuickTunnel(PUBLIC_PORT, (url) => { setTimeout(() => void hub.configureWebhook(url), 10_000); }, process.env.CCSMS_CLOUDFLARED || findCloudflared());
   tunnel.start();
 } else if (hub.cfg.tunnel.kind === "url" && hub.cfg.tunnel.publicUrl) {
   void hub.configureWebhook(hub.cfg.tunnel.publicUrl.replace(/\/+$/, ""));

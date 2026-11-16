@@ -40,13 +40,13 @@ describe("gsm7", () => {
 
 describe("e164", () => {
   test("normalizes common inputs", () => {
-    expect(normalizeE164("(403) 555-0123")).toBe("+14035550123");
-    expect(normalizeE164("1-403-555-0123")).toBe("+14035550123");
+    expect(normalizeE164("(212) 555-0123")).toBe("+12125550123");
+    expect(normalizeE164("1-212-555-0123")).toBe("+12125550123");
     expect(normalizeE164("+44 7700 900123")).toBe("+447700900123");
     expect(normalizeE164("0044 7700 900123")).toBe("+447700900123");
     expect(normalizeE164("12345")).toBeNull();
-    expect(isE164("+14035550123")).toBe(true);
-    expect(maskNumber("+14035550123")).toBe("...0123");
+    expect(isE164("+12125550123")).toBe(true);
+    expect(maskNumber("+12125550123")).toBe("...0123");
   });
 });
 
@@ -148,7 +148,7 @@ describe("router mapping", () => {
 
 describe("providers", () => {
   test("destinations", () => {
-    expect(destinationsFor(["+14035550123"]).sort()).toEqual(["CA", "US"]);
+    expect(destinationsFor(["+12125550123"]).sort()).toEqual(["CA", "US"]);
     expect(destinationsFor(["+447700900123"])).toEqual(["*"]);
   });
 

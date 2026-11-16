@@ -721,7 +721,7 @@ Candidates for later: Twilio-compatible APIs such as SignalWire (mostly a base-U
    - `StopFailure` has `error` (for example `rate_limit`) but no reset time.
    - `Notification` has `notification_type` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`, `agent_needs_input`, ...).
    - `additionalContext` is returned via `hookSpecificOutput`.
-6. **tmux keystrokes:** Esc interrupts, and digits followed by Enter answer numbered dialogs. Peek strips the input box and status bar.
+6. **tmux keystrokes:** verified live. Esc interrupts a session mid-turn (Claude Code shows "Interrupted"), and the interrupted turn sends no DONE. A digit followed by Enter answers an on-screen AskUserQuestion dialog. Peek strips the input box and status bar.
 7. **Built-in peer messaging:** not used. Channels plus the launcher are sufficient and documented.
 8. **A real stop vs a waiting stop:** `background_tasks` on the `Stop` hook. DONE is skipped while it's non-empty, and sent after the session's later, final stop.
 9. **Provider specifics:**
@@ -744,13 +744,24 @@ All phases (P0–P5) are implemented in v0.1.0:
 - **P4:** tmux launcher, peek/halt/spawn/resume.
 - **P5:** installer, setup, doctor, service, Twilio, docs.
 
-Verified end to end with real Claude Code sessions and the fake provider:
+Verified end to end on macOS with real Claude Code sessions and the fake provider:
 - texts delivered into idle and busy sessions;
-- DONE texts, including no DONE while a background shell runs;
+- hook-driven DONE texts, including no DONE while a background shell runs and none after a halt;
 - dispatcher routing;
 - `sms_ask` with numbered answers;
+- answering on-screen questions by digit;
 - multi-text capture;
-- peek, halt, and starting a session by text.
+- peek and halt mid-turn;
+- starting sessions by text (also with a worktree) and resuming them;
+- batching and the summarizer;
+- the Cloudflare quick tunnel;
+- the local API auth checks;
+- the one-line installer;
+- plugin self-update.
+
+**Not yet verified against live services:**
+- real SMS through Telnyx or Twilio (the webhook signature code and request shapes are unit-tested; two Telnyx endpoints are unconfirmed: number to messaging-profile assignment, and `/v2/balance` fields);
+- the Linux systemd service.
 
 Tests:
 - `bun test`: unit and hub-behavior tests, no network.

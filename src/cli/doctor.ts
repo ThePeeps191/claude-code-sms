@@ -77,7 +77,7 @@ export async function doctor(): Promise<number> {
           const base = s.webhook.url.replace(/\/sms\/\w+$/, "");
           const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(8000) });
           r.ok ? ok("Public URL reaches this computer") : fail(`Public URL answered ${r.status}`, "check your tunnel");
-        } catch (e: any) { fail(`Public URL unreachable: ${e?.message ?? e}`, "check the tunnel (ccsms logs); quick tunnels can take ~20s after start"); }
+        } catch (e: any) { fail(`Public URL unreachable: ${e?.message ?? e}`, "quick tunnels need ~30s after the hub starts (and your DNS may cache a miss for a minute); otherwise check ccsms logs"); }
       }
     }
     if (s.lastSendError) warn(`Last send error: ${s.lastSendError.message}`);

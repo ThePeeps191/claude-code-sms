@@ -400,3 +400,31 @@ describe("servers", () => {
     srv.stop(true);
   });
 });
+
+describe("public webhook", () => {
+  test("a signed Telnyx webhook reaches the hub once; unsigned ones are rejected", async () => {
+    const { generateKeyPairSync, sign } = await import("node:crypto");
+    const { startPublicServer } = await import("../src/hub/server.ts");
+    const { TelnyxProvider } = await import("../src/providers/telnyx.ts");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const raw = publicKey.export({ format: "der", type: "spki" }).subarray(12).toString("base64");
+    const { hub } = makeHub();
+    hub.provider = new TelnyxProvider("KEYx", raw, "+15550009999");
+    const seen: any[] = [];
+    hub.onInbound = (m: any) => { seen.push(m); };
+    const port = 46000 + Math.floor(Math.random() * 900);
+    const srv = startPublicServer(hub, port);
+    const body = JSON.stringify({ data: { event_type: "message.received", id: "evt-1", payload: { id: "m1", text: "status", from: { phone_number: OWNER }, to: [{ phone_number: "+15550009999" }] } } });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = sign(null, Buffer.from(`${ts}|${body}`), privateKey).toString("base64");
+    const post = (headers: Record<string, string>) => fetch(`http://127.0.0.1:${port}/sms/telnyx`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+    expect((await post({})).status).toBe(403);
+    expect((await post({ "telnyx-signature-ed25519": sig, "telnyx-timestamp": ts })).status).toBe(200);
+    expect((await post({ "telnyx-signature-ed25519": sig, "telnyx-timestamp": ts })).status).toBe(200); // retry
+    await Bun.sleep(20);
+    expect(seen.length).toBe(1);
+    expect(seen[0].text).toBe("status");
+    expect((await fetch(`http://127.0.0.1:${port}/api/status`)).status).toBe(404);
+    srv.stop(true);
+  });
+});

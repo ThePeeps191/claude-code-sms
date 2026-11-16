@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Config, loadConfig, saveConfig, DEFAULT_CONFIG, type ProviderName } from "../shared/config.ts";
@@ -200,7 +200,16 @@ export async function setup(flags: SetupFlags): Promise<number> {
   step(8, TOTAL, "Install the background hub");
   const sh = installShims();
   ok(`Commands: ${sh.linked.map((l) => l.replace(homedir(), "~")).join(", ") || "(could not link into ~/.local/bin)"}`);
-  if (sh.pathHint) warn(sh.pathHint);
+  if (sh.pathHint) {
+    const shell = (process.env.SHELL ?? "").split("/").pop() ?? "";
+    const rc = shell === "zsh" ? join(homedir(), ".zshrc") : shell === "bash" ? join(homedir(), ".bashrc") : "";
+    const line = 'export PATH="$HOME/.local/bin:$PATH"';
+    if (rc && interactive() && await confirm(`~/.local/bin isn't on your PATH, so 'claude-sms' won't be found. Add it to ${rc.replace(homedir(), "~")}?`, true)) {
+      const cur = existsSync(rc) ? readFileSync(rc, "utf8") : "";
+      if (!cur.includes(".local/bin")) appendFileSync(rc, `\n# added by claude-code-sms setup\n${line}\n`);
+      ok(`Added. Open a new terminal (or run: source ${rc.replace(homedir(), "~")}).`);
+    } else warn(sh.pathHint);
+  }
   let running = false;
   const prot = protectedLocation(repoRoot());
   if (prot && !flags.noService) {
