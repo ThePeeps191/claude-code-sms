@@ -519,6 +519,13 @@ Delivered text is always the user's original text; the model only picks the targ
   - Recipients come only from config and are never a tool parameter, so prompt injection can't redirect texts.
   - A scrubber runs on every outbound text, removing API key, token and private-key patterns and `KEY=value` lines. SMS travels in plain text.
 - **Router:** no tools, restricted mode, a fixed action list, and code-enforced confirmation for starting and stopping sessions.
+- **Local API:** `/api/*` on 127.0.0.1:47913 requires a per-install token (`~/.claude-code-sms/token`, mode 600) that the CLI sends. Every internal request must also pass these checks:
+  - **Host** is `127.0.0.1:<port>` or `localhost:<port>`, which blocks DNS rebinding;
+  - **no `Origin`** header, so browsers can't call it;
+  - **JSON** body on POSTs.
+
+  `/hooks/*` can't carry the token, so hook data is treated as low-trust activity reporting. It can never deliver prompts.
+- **PIN brute force:** 5 wrong PINs trigger lockdown. Unlock texts are stored masked and never reach the dispatcher.
 - **Exposure:**
   - The tunnel forwards only `POST /sms/<provider>`.
   - Hooks listen on `127.0.0.1` only and carry a per-install token header if hooks support it (spike item 5); otherwise they're localhost-only and treated as low-trust (activity data only).

@@ -72,7 +72,7 @@ export function segmentCount(s: string): number {
  */
 export function paginate(s: string, maxSegments: number): string[] {
   const limit = maxSegments === 1 ? 160 : maxSegments * 153;
-  const pageBudget = limit - 12; // room for " (MORE 1/3)"
+  const pageBudget = limit - 15; // room for " (MORE 10/12)"
   if (gsmLength(s) <= limit) return [s];
   const pages: string[] = [];
   let rest = s;

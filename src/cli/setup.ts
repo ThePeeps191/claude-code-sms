@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { type Config, loadConfig, saveConfig, DEFAULT_CONFIG, type ProviderName } from "../shared/config.ts";
 import { loadSecrets, saveSecrets } from "../shared/secrets.ts";
 import { normalizeE164, maskNumber } from "../shared/e164.ts";
-import { paths, INTERNAL_URL } from "../shared/paths.ts";
+import { paths } from "../shared/paths.ts";
+import { hubJson } from "../shared/api.ts";
 import { createProvider, destinationsFor } from "../providers/index.ts";
 import { findClaude } from "../hub/router.ts";
 import { tmuxAvailable } from "../hub/tmux.ts";
@@ -269,12 +270,12 @@ async function buyFlow(p: ReturnType<typeof createProvider>, ownerNumber: string
 }
 
 async function waitForWebhook(provider: string, ms: number): Promise<{ ok: boolean; url?: string; error?: string }> {
-  await fetch(`${INTERNAL_URL}/api/reload`, { method: "POST" }).catch(() => {});
+  await hubJson("/api/reload", {}).catch(() => {});
   const end = Date.now() + ms;
   let last: any = null;
   while (Date.now() < end) {
     try {
-      const s = (await (await fetch(`${INTERNAL_URL}/api/status`)).json()) as any;
+      const s = (await hubJson("/api/status")) as any;
       last = s.webhook;
       if (s.webhook?.ok && s.webhook.url?.includes(`/sms/${provider}`)) return { ok: true, url: s.webhook.url };
     } catch {}
@@ -286,12 +287,12 @@ async function waitForWebhook(provider: string, ms: number): Promise<{ ok: boole
 async function testRoundTrip(owner: string): Promise<boolean> {
   const since = Date.now();
   const text = "claude-code-sms is connected. Reply OK to finish setup.";
-  const r = (await (await fetch(`${INTERNAL_URL}/api/test-text`, { method: "POST", body: JSON.stringify({ text }) })).json()) as any;
+  const r = (await hubJson("/api/test-text", { text })) as any;
   if (r.lastSendError && r.lastSendError.at >= since) { bad(`Sending failed: ${r.lastSendError.message}`); return false; }
   info(`Texted ${maskNumber(owner)}. Reply OK from your phone (waiting up to 3 minutes)...`);
   const end = Date.now() + 180_000;
   while (Date.now() < end) {
-    const msgs = (await (await fetch(`${INTERNAL_URL}/api/messages?since=${since}`)).json()) as any[];
+    const msgs = (await hubJson(`/api/messages?since=${since}`)) as any[];
     if (msgs.some((m) => m.direction === "in")) { ok("Got your reply. Sending and receiving both work."); return true; }
     await Bun.sleep(2000);
   }

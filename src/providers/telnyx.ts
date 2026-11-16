@@ -149,12 +149,13 @@ export class TelnyxProvider implements SmsProvider {
     const numbers = await this.listNumbers();
     const owned = numbers.find((n) => n.number === number);
     if (!owned) throw new ProviderError(`The number ${number} is not on this Telnyx account.`);
-    let profileId = opts.profileId || owned.messagingProfileId || "";
+    // Only ever modify our own dedicated profile; never repoint a profile the user may share.
+    let profileId = opts.profileId || "";
     const profileBody: Record<string, unknown> = {
       webhook_url: webhookUrl,
-      webhook_failover_url: opts.failoverUrl ?? "",
       webhook_api_version: "2",
       enabled: true,
+      ...(opts.failoverUrl ? { webhook_failover_url: opts.failoverUrl } : {}),
     };
     if (profileId) {
       try {

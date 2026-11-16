@@ -71,7 +71,7 @@ ROOT="$(claude plugin list --json 2>/dev/null | bun -e '
   const list = JSON.parse(await Bun.stdin.text() || "[]");
   const p = list.find((x) => String(x.id).startsWith("sms@"));
   console.log(p?.installPath || p?.readFromFolder || "");
-')"
+' || true)"
 [ -n "$ROOT" ] && [ -d "$ROOT" ] || die "Couldn't find the installed plugin (claude plugin list --json)."
 info "Plugin: $ROOT"
 

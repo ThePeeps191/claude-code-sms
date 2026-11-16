@@ -4,7 +4,7 @@
  * QUIT, HELP, START, ...) are deliberately never used as commands.
  */
 
-export type SessionRef = { num?: number; name?: string };
+export type SessionRef = { num?: number; name?: string; id?: string };
 
 export type Action =
   | { type: "status"; cost?: boolean }

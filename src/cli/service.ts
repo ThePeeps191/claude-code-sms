@@ -104,10 +104,10 @@ Description=claude-code-sms hub
 After=network-online.target
 
 [Service]
-ExecStart=${shim} hub
+ExecStart="${shim}" hub
 Restart=on-failure
 RestartSec=10
-Environment=PATH=${servicePath()}
+Environment="PATH=${servicePath()}"
 
 [Install]
 WantedBy=default.target

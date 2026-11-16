@@ -51,6 +51,7 @@ interface Runtime {
   lastWaitingAt?: number;
   lastFailureAt?: number;
   lastStopMessage?: string;
+  lastDoneAt?: number;
 }
 
 const MODE_NOTICES: Record<Mode, string> = {
@@ -372,6 +373,12 @@ export class Hub {
         if (!r.turnStart) r.turnStart = now;
         const tool = String(body.tool_name ?? "");
         if (isSubstantiveTool(tool)) r.lastSubstantiveAt = now;
+        if (tool === "AskUserQuestion") {
+          // Answered (at the computer or by text): forget the on-screen question.
+          const pq = s.pending_question ? safeJson(s.pending_question) : null;
+          if (pq?.via === "screen") this.store.updateSession(id, { pending_question: null });
+          this.clearChoicesFor(id, ["screen"]);
+        }
         if (!tool.startsWith("mcp__plugin_sms") && !/sms_(reply|update|ask|watch)$/.test(tool)) {
           const act = describeTool(tool, body.tool_input);
           this.store.updateSession(id, { status: "busy", busy_since: s.busy_since ?? now, last_activity: act });
@@ -470,7 +477,8 @@ export class Hub {
     const r = this.rt(id);
     if (!s || s.status !== "idle") return;
     if ((r.lastEventAt ?? 0) > stopAt) return; // woke up again
-    if (!this.shouldNotify(s, "T3")) { r.turnStart = undefined; return; }
+    const textedSinceDone = Boolean(r.lastInboundAt && r.lastInboundAt > (r.lastDoneAt ?? 0));
+    if (!this.shouldNotify(s, "T3") && !textedSinceDone) { r.turnStart = undefined; return; }
     // The turn ended on a texted question: the question already went out; no "done" yet.
     const pq = s.pending_question ? safeJson(s.pending_question) : null;
     if (pq?.via === "sms" && pq.at >= (r.turnStart ?? stopAt - 3600_000)) { r.turnStart = undefined; return; }
@@ -482,7 +490,10 @@ export class Hub {
     let summary = firstParagraph(plain);
     if (summary.length > 300) summary = (await this.dispatcher.summarize(plain).catch(() => null)) ?? summary.slice(0, 280) + "...";
     this.outbox.cancelPending((i) => i.sessionId === id && i.tier === "T5");
-    this.notify("T3", `${s.name}: DONE${dur}. ${summary || "Finished."}${summary.endsWith("?") ? "" : " Reply to continue."}`.replace(/\s+/g, " "), id, `done:${id}`);
+    r.lastDoneAt = Date.now();
+    const body = `${s.name}: DONE${dur}. ${summary || "Finished."}${summary.endsWith("?") ? "" : " Reply to continue."}`.replace(/\s+/g, " ");
+    if (this.shouldNotify(s, "T3")) this.notify("T3", body, id, `done:${id}`);
+    else { this.outbox.enqueue({ tier: "T3", text: body, sessionId: id, key: `done:${id}`, to: r.lastPeer ? [r.lastPeer] : undefined }); this.budgetCheck(); }
   }
 
   // ------------------------------------------------------------------ outbound helpers
@@ -527,7 +538,8 @@ export class Hub {
       return;
     }
     const text = msg.text.trim();
-    this.store.addMessage({ direction: "in", peer: msg.from, body: msg.text, segments: 1, cost: null, currency: null, provider_id: msg.id, status: "received", tier: null, session_id: null });
+    const logged = /^\s*unlock\s+\d+/i.test(msg.text) ? "unlock ****" : msg.text;
+    this.store.addMessage({ direction: "in", peer: msg.from, body: logged, segments: 1, cost: null, currency: null, provider_id: msg.id, status: "received", tier: null, session_id: null });
     if (!text) {
       if (msg.mediaCount) this.reply(msg.from, "Pictures aren't supported yet; please text words.", 1);
       return;
@@ -600,7 +612,10 @@ export class Hub {
     // Capture mode
     if (st.capture) {
       if (st.capture.active && now - st.capture.lastAt > 30 * 60_000) st.capture.active = false;
-      if (t === "send" && st.capture.parts.length) { await this.previewCapture(from, st); return; }
+      if (t === "send") {
+        if (st.capture.parts.length) { await this.previewCapture(from, st); return; }
+        if (st.capture.active) { this.reply(from, "Nothing captured yet. Send your prompt texts first, then send.", 1); return; }
+      }
       if (t === "discard") {
         this.setSender(from, { ...st, capture: undefined });
         this.reply(from, "Discarded.", 1);
@@ -692,10 +707,17 @@ export class Hub {
       const inbound = live.filter((s) => s.inbound && this.bridges.has(s.id));
       return inbound.length === 1 ? inbound[0] : null;
     }
+    if (ref.id) {
+      const s = this.store.session(ref.id);
+      return s && (s.status !== "ended" || opts.includeEnded) ? s : null;
+    }
     const pool = opts.includeEnded ? [...live, ...this.store.recentEnded(20)] : live;
-    if (ref.num !== undefined) return pool.find((s) => s.num === ref.num && s.status !== "ended") ?? (opts.includeEnded ? null : null);
+    if (ref.num !== undefined) return pool.find((s) => s.num === ref.num) ?? null;
     const name = ref.name!;
-    return pool.find((s) => s.name === name) ?? pool.find((s) => s.name.startsWith(name)) ?? null;
+    const exact = pool.find((s) => s.name === name);
+    if (exact) return exact;
+    const prefixed = pool.filter((s) => s.name.startsWith(name));
+    return prefixed.length === 1 ? prefixed[0] : null; // ambiguous prefixes never guess
   }
 
   private sessionListShort(filter: (s: SessionRow) => boolean = () => true): string {
@@ -746,7 +768,20 @@ export class Hub {
       }
       case "unlock": {
         if (!this.cfg.security.unlockPin) return this.reply(from, "No PIN is set; nothing to unlock.", 1);
-        if (a.pin !== this.cfg.security.unlockPin) return this.reply(from, "Wrong PIN.", 1);
+        if (a.pin !== this.cfg.security.unlockPin) {
+          const f = this.store.get<{ count: number; at: number }>("pinFailures", { count: 0, at: Date.now() });
+          const count = Date.now() - f.at > 24 * 3600_000 ? 1 : f.count + 1;
+          this.store.set("pinFailures", { count, at: count === 1 ? Date.now() : f.at });
+          if (count >= 5) {
+            this.store.set("lockdown", true);
+            this.store.set("pinFailures", null);
+            log.warn("5 wrong PINs: lockdown");
+            for (const n of this.notifyTargets()) void this.outbox.sendRaw(n, "5 wrong PINs: locked down. Run 'ccsms unlock' at the computer.", "T1", null);
+            return;
+          }
+          return this.reply(from, "Wrong PIN.", 1);
+        }
+        this.store.set("pinFailures", null);
         this.store.set("unlockedUntil", Date.now() + this.cfg.security.unlockHours * 3600_000);
         return this.reply(from, `Unlocked for ${this.cfg.security.unlockHours}h.`, 1);
       }
@@ -762,8 +797,9 @@ export class Hub {
       case "capture_send": {
         const cap = st.capture;
         if (!cap?.parts.length) return this.reply(from, "No captured prompt to send. Text prompt to start one.", 1);
-        this.setSender(from, { ...st, capture: undefined, confirm: undefined, choice: undefined });
-        return this.deliver(from, a.target, cap.parts.join("\n\n"), "prompt");
+        this.setSender(from, { ...st, confirm: undefined, choice: undefined, capture: { ...cap, active: false } });
+        if (await this.deliver(from, a.target, cap.parts.join("\n\n"), "prompt")) this.setSender(from, { ...this.sender(from), capture: undefined });
+        return;
       }
       case "capture_discard":
         this.setSender(from, { ...st, capture: undefined, confirm: st.confirm?.kind === "capture_send" ? undefined : st.confirm });
@@ -775,7 +811,7 @@ export class Hub {
         }
         return this.reply(from, a.text, 2);
       }
-      case "deliver": return this.deliver(from, a.target, a.text, a.kind, a.inferred);
+      case "deliver": { await this.deliver(from, a.target, a.text, a.kind, a.inferred); return; }
       case "peek": {
         const s = this.resolveTarget(a.target, from);
         if (!s) return this.reply(from, `Which session? ${this.sessionListShort() || "None running."}`, 1);
@@ -812,7 +848,7 @@ export class Hub {
       case "retry": {
         const s = a.target ? this.resolveTarget(a.target, from) : this.live().filter((x) => x.inbound).sort((x, y) => (this.rt(y.id).lastFailureAt ?? 0) - (this.rt(x.id).lastFailureAt ?? 0))[0];
         if (!s) return this.reply(from, "Which session? Text status.", 1);
-        return this.deliver(from, { num: s.num }, "Please continue where you left off.", "prompt");
+        { await this.deliver(from, { num: s.num }, "Please continue where you left off.", "prompt"); return; }
       }
     }
   }
@@ -847,10 +883,10 @@ export class Hub {
     }
     switch (c.kind) {
       case "capture_send": {
-        this.setSender(from, { ...this.sender(from), capture: undefined });
-        const s = this.store.session(c.data.sessionId);
-        if (!s) return this.reply(from, "That session is gone. Text send to pick another.", 1);
-        return this.deliver(from, { num: s.num }, c.prompt, "prompt");
+        const ok = await this.deliver(from, { id: c.data.sessionId }, c.prompt, "prompt");
+        if (ok) this.setSender(from, { ...this.sender(from), capture: undefined });
+        else this.setSender(from, { ...this.sender(from), capture: { ...st.capture!, active: false } });
+        return;
       }
       case "halt": {
         const s = this.store.session(c.data);
@@ -876,8 +912,9 @@ export class Hub {
       case "spawn": {
         const live = this.live().length;
         if (live >= this.cfg.spawn.max) return this.reply(from, `Already ${live} sessions (max ${this.cfg.spawn.max}).`, 1);
-        const args = c.data.worktree ? ["--worktree"] : [];
-        const r = await this.launchSession(c.data.dir, [...args, c.data.prompt], undefined);
+        const base = String(c.data.dir).split("/").filter(Boolean).pop() ?? "session";
+        const args = c.data.worktree ? [`--worktree=sms-${base}-${Date.now().toString(36)}`] : [];
+        const r = await this.launchSession(c.data.dir, [...args, "--", c.data.prompt], undefined);
         return this.reply(from, r.ok ? `Started a session in ${shortPath(c.data.dir)}. I'll text when it finishes.` : `Couldn't start it: ${r.error}`, 1);
       }
     }
@@ -888,16 +925,16 @@ export class Hub {
     switch (c.kind) {
       case "route": {
         if (!c.options.includes(n)) return this.reply(from, `Pick one of: ${c.options.join(" ")}`, 1);
-        this.setSender(from, { ...st, choice: undefined, capture: c.data.fromCapture ? undefined : st.capture });
-        return this.deliver(from, { num: n }, c.data.text, c.data.kind ?? "prompt");
+        this.setSender(from, { ...st, choice: undefined });
+        const ok = await this.deliver(from, { num: n }, c.data.text, c.data.kind ?? "prompt");
+        if (ok && c.data.fromCapture) this.setSender(from, { ...this.sender(from), capture: undefined });
+        return;
       }
       case "answer": {
         const opt = c.options[n - 1];
         if (opt === undefined) return this.reply(from, `Pick 1-${c.options.length}.`, 1);
         this.setSender(from, { ...st, choice: undefined });
-        const s = this.store.session(c.data.sessionId);
-        if (!s) return this.reply(from, "That session is gone.", 1);
-        return this.deliver(from, { num: s.num }, `${n} (${opt})`, "answer");
+        { await this.deliver(from, { id: c.data.sessionId }, `${n} (${opt})`, "answer"); return; }
       }
       case "screen": {
         const opt = c.options[n - 1];
@@ -914,22 +951,31 @@ export class Hub {
     }
   }
 
-  async deliver(from: string, ref: SessionRef | null, text: string, kind: "prompt" | "question" | "answer", inferred?: boolean): Promise<void> {
+  /** Deliver a text to a session. Returns true if it was handed to the session. */
+  async deliver(from: string, ref: SessionRef | null, text: string, kind: "prompt" | "question" | "answer", inferred?: boolean): Promise<boolean> {
     const s = this.resolveTarget(ref, from);
     const st = this.sender(from);
     if (!s) {
       const opts = this.live().filter((x) => x.inbound && this.bridges.has(x.id));
-      if (ref) return this.reply(from, `No session "${refText(ref)}". ${opts.length ? `Running: ${opts.map((x) => `${x.num} ${x.name}`).join(" ")}` : "None can receive texts."}`, 1);
-      if (!opts.length) return this.reply(from, "No session can receive texts right now. Start one with claude-sms (or text: new <folder>: <prompt>).", 1);
+      if (ref) { this.reply(from, `No session "${refText(ref)}". ${opts.length ? `Running: ${opts.map((x) => `${x.num} ${x.name}`).join(" ")}` : "None can receive texts."}`, 1); return false; }
+      if (!opts.length) { this.reply(from, "No session can receive texts right now. Start one with claude-sms (or text: new <folder>: <prompt>).", 1); return false; }
       this.setSender(from, { ...st, choice: { kind: "route", options: opts.map((x) => x.num), data: { text, kind }, expires: Date.now() + 30 * 60_000 } });
-      return this.reply(from, `Which session? ${opts.map((x) => `${x.num} ${x.name}`).join(" ")}`, 1);
+      this.reply(from, `Which session? ${opts.map((x) => `${x.num} ${x.name}`).join(" ")}`, 1);
+      return false;
     }
-    const bridge = this.bridges.get(s.id);
+    let bridge = this.bridges.get(s.id);
+    // Right after a hub restart, bridges take a few seconds to reconnect.
+    for (let i = 0; !bridge && s.inbound && i < 16; i++) { await Bun.sleep(500); bridge = this.bridges.get(s.id); }
     if (!s.inbound || !bridge) {
-      return this.reply(from, `${s.name} can't receive texts (it wasn't started with claude-sms). It will still text you when it finishes.`, 1);
+      this.reply(from, `${s.name} can't receive texts (it wasn't started with claude-sms). It will still text you when it finishes.`, 1);
+      return false;
     }
     let k = kind;
-    if (s.pending_question && k !== "question") { k = "answer"; this.store.updateSession(s.id, { pending_question: null }); }
+    if (s.pending_question && k !== "question") {
+      k = "answer";
+      this.store.updateSession(s.id, { pending_question: null });
+      this.clearChoicesFor(s.id);
+    }
     const msgId = String(Date.now());
     bridge.send({ t: "deliver", content: text, meta: { kind: k, msg_id: msgId } });
     const r = this.rt(s.id);
@@ -939,9 +985,21 @@ export class Hub {
     this.store.addEvent(s.id, "sms_in", `${k}: ${text.slice(0, 60)}`);
     // Watched-or-not, a session the user is texting should report back.
     if (s.status === "busy") {
-      return this.reply(from, `${s.name} is busy (${fmtDuration(Date.now() - (s.busy_since ?? Date.now()))}); it'll see this after its current step.`, 1);
+      this.reply(from, `${s.name} is busy (${fmtDuration(Date.now() - (s.busy_since ?? Date.now()))}); it'll see this after its current step.`, 1);
+    } else if (inferred && this.live().filter((x) => x.inbound).length > 1) {
+      this.reply(from, `-> ${s.name}`, 1);
     }
-    if (inferred && this.live().filter((x) => x.inbound).length > 1) return this.reply(from, `-> ${s.name}`, 1);
+    return true;
+  }
+
+  /** Forget numbered choices that answer a question from this session (it was answered another way). */
+  clearChoicesFor(sessionId: string, kinds: ("answer" | "screen")[] = ["answer", "screen"]) {
+    for (const n of this.cfg.owners.numbers) {
+      const st = this.sender(n);
+      if (st.choice && kinds.includes(st.choice.kind as any) && st.choice.data?.sessionId === sessionId) {
+        this.setSender(n, { ...st, choice: undefined });
+      }
+    }
   }
 
   // ------------------------------------------------------------------ spawning

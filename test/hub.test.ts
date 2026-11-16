@@ -292,6 +292,57 @@ describe("hub", () => {
     expect(hub.store.session("new")!.num).toBe(num);
   });
 
+  test("work started by text reports back even in home mode", async () => {
+    const { hub, sent } = makeHub();
+    const b = bridge(hub, "s1", { cwd: "/code/webapp" });
+    await text(hub, "@webapp fix the tests");
+    hub.onHook("UserPromptSubmit", { session_id: "s1" });
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Fixed 2 tests." });
+    await Bun.sleep(30); await flush(hub);
+    expect(sent.some((x) => x.body.includes("DONE") && x.body.includes("Fixed 2 tests"))).toBe(true);
+    // A later turn the user didn't start by text stays quiet at home.
+    const n = sent.length;
+    hub.onHook("UserPromptSubmit", { session_id: "s1" });
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Other work." });
+    await Bun.sleep(30); await flush(hub);
+    expect(sent.length).toBe(n);
+  });
+
+  test("5 wrong PINs trigger lockdown; unlock texts are masked in the log", async () => {
+    const { hub } = makeHub({ cfg: (c) => { c.security.unlockPin = "4821"; } });
+    for (let i = 0; i < 5; i++) hub.onInbound({ kind: "message", id: `p${i}`, from: OWNER, to: "", text: `unlock 000${i}`, mediaCount: 0 });
+    await Bun.sleep(50);
+    expect(hub.store.get("lockdown", false)).toBe(true);
+    expect(hub.store.lastMessages(50).filter((m) => m.direction === "in").every((m) => m.body === "unlock ****")).toBe(true);
+  });
+
+  test("ambiguous @prefix never guesses", async () => {
+    const { hub, sent } = makeHub();
+    const a = bridge(hub, "a", { cwd: "/code/webapp" });
+    const w = bridge(hub, "w", { cwd: "/code/worker" });
+    await text(hub, "@w deploy");
+    await flush(hub);
+    expect([...a.got, ...w.got].some((m) => m.t === "deliver")).toBe(false);
+    expect(sent.at(-1)!.body).toContain('No session "w"');
+  });
+
+  test("an sms_ask answered in words clears the numbered choice", async () => {
+    const { hub, sent } = makeHub();
+    const b = bridge(hub, "s1");
+    hub.setMode("away");
+    await hub.onBridgeRequest(b.conn as any, { t: "req", id: 1, op: "ask", args: { question: "DB?", options: ["Redis", "SQLite"] } });
+    await text(hub, `@${hub.store.session("s1")!.name} use sqlite`);
+    expect(hub.sender(OWNER).choice).toBeUndefined();
+  });
+
+  test("a captured prompt is kept if delivery fails", async () => {
+    const { hub } = makeHub();
+    await text(hub, "prompt");
+    await text(hub, "part one");
+    await text(hub, "send");
+    expect(hub.sender(OWNER).capture?.parts).toEqual(["part one"]);
+  });
+
   test("long replies are paged with MORE", async () => {
     const { hub, sent } = makeHub();
     for (let i = 0; i < 9; i++) bridge(hub, `s${i}`, { cwd: `/code/project-number-${i}` });
@@ -307,3 +358,45 @@ describe("hub", () => {
 
 afterEach(() => {});
 process.on("exit", () => { try { rmSync(home, { recursive: true, force: true }); } catch {} });
+
+describe("servers", () => {
+  test("internal API rejects browsers, wrong hosts and missing tokens; hooks still work", async () => {
+    const { startInternalServer } = await import("../src/hub/server.ts");
+    const { hub } = makeHub();
+    const port = 47000 + Math.floor(Math.random() * 900);
+    const srv = startInternalServer(hub, port, "t".repeat(40));
+    const base = `http://127.0.0.1:${port}`;
+    const post = (path: string, headers: Record<string, string>, body = "{}") => fetch(base + path, { method: "POST", headers, body });
+    expect((await post("/api/fake/inbound", { "content-type": "application/json" }, '{"text":"status"}')).status).toBe(401);
+    expect((await post("/api/fake/inbound", { "content-type": "text/plain", "x-ccsms-token": "t".repeat(40) }, '{"text":"status"}')).status).toBe(415);
+    expect((await post("/api/fake/inbound", { "content-type": "application/json", origin: "https://evil.example", "x-ccsms-token": "t".repeat(40) }, '{"text":"status"}')).status).toBe(403);
+    expect((await fetch(base + "/api/status", { headers: { host: "evil.example:" + port, "x-ccsms-token": "t".repeat(40) } })).status).toBe(403);
+    expect((await fetch(base + "/api/status", { headers: { "x-ccsms-token": "t".repeat(40) } })).status).toBe(200);
+    const hook = await post("/hooks/SessionStart", { "content-type": "application/json" }, JSON.stringify({ session_id: "h1", cwd: "/x/proj", source: "startup" }));
+    expect(hook.status).toBe(200);
+    expect(hub.store.session("h1")).not.toBeNull();
+    srv.stop(true);
+  });
+
+  test("bridge socket delivers large messages intact", async () => {
+    const { startBridgeSocket } = await import("../src/hub/server.ts");
+    const { LineDecoder, encode } = await import("../src/shared/protocol.ts");
+    const { hub } = makeHub();
+    const sockPath = join(home, `t${Math.random().toString(36).slice(2, 8)}.sock`);
+    const srv = startBridgeSocket(hub, sockPath);
+    const got: any[] = [];
+    const dec = new LineDecoder();
+    const client = await Bun.connect({ unix: sockPath, socket: { data(_s, b) { dec.push(b.toString(), (m) => got.push(m)); } } });
+    client.write(encode({ t: "hello", pid: 1, claudePid: process.pid, sessionId: "big", cwd: "/x/big", name: null, inbound: true, tmuxPane: null, version: "t" }));
+    for (let i = 0; i < 50 && !got.some((m) => m.t === "welcome"); i++) await Bun.sleep(10);
+    const big = "x".repeat(200_000);
+    hub.bridges.get("big")!.send({ t: "deliver", content: big, meta: { kind: "prompt" } });
+    hub.bridges.get("big")!.send({ t: "deliver", content: "after", meta: { kind: "prompt" } });
+    for (let i = 0; i < 200 && got.filter((m) => m.t === "deliver").length < 2; i++) await Bun.sleep(10);
+    const delivered = got.filter((m) => m.t === "deliver");
+    expect(delivered[0].content.length).toBe(200_000);
+    expect(delivered[1].content).toBe("after");
+    client.end();
+    srv.stop(true);
+  });
+});

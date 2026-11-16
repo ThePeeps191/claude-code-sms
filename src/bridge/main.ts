@@ -74,6 +74,14 @@ type Pending = { resolve: (s: string) => void; timer: ReturnType<typeof setTimeo
 const pending = new Map<number, Pending>();
 let nextId = 1;
 let sock: Awaited<ReturnType<typeof Bun.connect>> | null = null;
+let pendingOut: Buffer | null = null;
+function send(obj: unknown) {
+  if (!sock) return;
+  const buf = Buffer.from(encode(obj));
+  if (pendingOut) { pendingOut = Buffer.concat([pendingOut, buf]); return; }
+  const n = sock.write(buf);
+  if (n < buf.length) pendingOut = buf.subarray(Math.max(0, n));
+}
 let connected = false;
 const claudePid = findClaudePid();
 let info = readSessionInfo(claudePid);
@@ -102,7 +110,8 @@ async function connect(): Promise<void> {
     sock = await Bun.connect({
       unix: paths.socket,
       socket: {
-        open(s) { connected = true; s.write(encode(hello())); },
+        open(s) { connected = true; pendingOut = null; sock = s as any; send(hello()); },
+        drain() { const p = pendingOut; pendingOut = null; if (p) { const buf = p; const n = sock!.write(buf); if (n < buf.length) pendingOut = buf.subarray(Math.max(0, n)); } },
         data(_s, buf) { dec.push(buf.toString(), onHubMsg); },
         close() { connected = false; welcomed = false; sock = null; failPending("hub disconnected"); setTimeout(connect, 3000); },
         error() { connected = false; },
@@ -141,7 +150,7 @@ function request(op: string, args: Record<string, unknown>): Promise<string> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { pending.delete(id); resolve("error: the hub didn't answer in time"); }, 120_000);
     pending.set(id, { resolve, timer });
-    sock!.write(encode({ t: "req", id, op, args }));
+    send({ t: "req", id, op, args });
   });
 }
 
@@ -151,7 +160,7 @@ setInterval(() => {
   if (next.sessionId && next.sessionId !== info.sessionId) {
     const prev = info.sessionId;
     info = next;
-    if (connected && sock) sock.write(encode(hello(prev)));
+    if (connected && sock) send(hello(prev));
   }
 }, 3000);
 

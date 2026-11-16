@@ -5,6 +5,7 @@ import { paths, INTERNAL_PORT, PUBLIC_PORT } from "../shared/paths.ts";
 import { logger } from "../shared/log.ts";
 import { VERSION } from "../shared/version.ts";
 import { normalizeE164 } from "../shared/e164.ts";
+import { getOrCreateToken, TOKEN_HEADER } from "../shared/api.ts";
 
 const log = logger("server");
 
@@ -15,7 +16,8 @@ const json = (o: unknown, status = 200) =>
  * Internal server on 127.0.0.1 only: hooks, the CLI API and the fake phone.
  * Never reachable through the tunnel (the tunnel targets the public port).
  */
-export function startInternalServer(hub: Hub, port = INTERNAL_PORT) {
+export function startInternalServer(hub: Hub, port = INTERNAL_PORT, token = getOrCreateToken()) {
+  const okHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return Bun.serve({
     hostname: "127.0.0.1",
     port,
@@ -23,6 +25,11 @@ export function startInternalServer(hub: Hub, port = INTERNAL_PORT) {
     async fetch(req) {
       const url = new URL(req.url);
       const p = url.pathname;
+      // Defend against browsers (CSRF, DNS rebinding) and other local users.
+      if (!okHosts.has(req.headers.get("host") ?? "")) return json({ error: "bad host" }, 403);
+      if (req.headers.get("origin") || req.headers.get("sec-fetch-site")) return json({ error: "browser requests are not allowed" }, 403);
+      if (req.method === "POST" && !(req.headers.get("content-type") ?? "").startsWith("application/json")) return json({ error: "json only" }, 415);
+      if (p.startsWith("/api/") && p !== "/api/health" && req.headers.get(TOKEN_HEADER) !== token) return json({ error: "unauthorized" }, 401);
       try {
         if (p.startsWith("/hooks/") && req.method === "POST") {
           const event = p.slice("/hooks/".length);
@@ -70,9 +77,6 @@ export function startInternalServer(hub: Hub, port = INTERNAL_PORT) {
           const b = (await req.json()) as { from?: string; text: string };
           const from = b.from ? normalizeE164(b.from) ?? b.from : hub.cfg.owners.numbers[0];
           if (!from) return json({ ok: false, error: "no owner number configured; run ccsms setup" }, 400);
-          if (hub.provider.id !== "fake" && !process.env.CCSMS_ALLOW_FAKE_INBOUND) {
-            // Still allowed: the fake phone can drive a real-provider hub for testing; replies go out as real texts.
-          }
           hub.onInbound({ kind: "message", id: `fake-in-${Date.now()}`, from, to: hub.cfg.provider.number, text: b.text, mediaCount: 0 });
           return json({ ok: true });
         }
@@ -141,16 +145,21 @@ export function startPublicServer(hub: Hub, port = PUBLIC_PORT) {
 /** Unix socket for bridges (one connection per Claude Code session). */
 export function startBridgeSocket(hub: Hub, socketPath = paths.socket) {
   if (existsSync(socketPath)) { try { unlinkSync(socketPath); } catch {} }
-  type Data = { conn: BridgeConn; dec: LineDecoder };
+  type Data = { conn: BridgeConn; dec: LineDecoder; pending: Buffer | null };
   const server = Bun.listen<Data>({
     unix: socketPath,
     socket: {
       open(socket) {
         const conn: BridgeConn = {
           sessionId: null, claudePid: null, version: "",
-          send: (msg: HubMsg) => { try { socket.write(encode(msg)); } catch {} },
+          send: (msg: HubMsg) => writeAll(socket, Buffer.from(encode(msg))),
         };
-        socket.data = { conn, dec: new LineDecoder() };
+        socket.data = { conn, dec: new LineDecoder(), pending: null };
+      },
+      drain(socket) {
+        const p = socket.data.pending;
+        socket.data.pending = null;
+        if (p) writeAll(socket, p);
       },
       data(socket, buf) {
         socket.data.dec.push(buf.toString(), async (msg: BridgeMsg) => {
@@ -174,4 +183,13 @@ export function startBridgeSocket(hub: Hub, socketPath = paths.socket) {
   });
   try { chmodSync(socketPath, 0o600); } catch {}
   return server;
+}
+
+/** Bun's socket.write may write only part of the buffer; keep the rest for the drain event. */
+function writeAll(socket: { write(b: Buffer): number; data: { pending: Buffer | null } }, buf: Buffer) {
+  try {
+    if (socket.data.pending) { socket.data.pending = Buffer.concat([socket.data.pending, buf]); return; }
+    const n = socket.write(buf);
+    if (n < buf.length) socket.data.pending = buf.subarray(Math.max(0, n));
+  } catch {}
 }

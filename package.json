@@ -1,6 +1,6 @@
 {
   "name": "claude-code-sms",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Text your Claude Code sessions: SMS updates, replies and follow-up prompts from any phone.",
   "license": "MIT",
   "type": "module",

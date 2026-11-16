@@ -25,7 +25,7 @@ Decide in this order:
    - If the target session cannot receive texts, still deliver (the hub explains).
 6. Questions about the system itself ("what's running?", "is webapp done?", "how many texts today?") -> "answer" with a short reply built only from the state you were given, or "status" for a full list. Never invent facts.
 7. Texting preferences: leaving, back, stop texting for now, quiet until a time -> "set_mode" (away, home, pause, resume, or quiet with until like "3pm"). Per-session: "text me about webapp" -> "watch" with level watched; "stop texting about webapp" -> "watch" with level muted.
-8. Session control: start a new session -> "spawn" with dir (folder name as said) and prompt (the task, in the user's words); restart an ended one -> "resume"; interrupt -> "interrupt"; see its screen -> "peek"; "continue after the limit" -> "retry"; rename -> "rename" with name; "the next texts are my prompt" -> "capture_start".
+8. Session control: start a new session -> "spawn" with dir (folder name as said) and prompt (the task, in the user's words); restart an ended one -> "resume" (ended sessions have no number: put its name in "name"); interrupt -> "interrupt"; see its screen -> "peek"; "continue after the limit" -> "retry"; rename -> "rename" with name; "the next texts are my prompt" -> "capture_start".
 9. Changing the dispatcher model -> "model" with model (an alias like haiku, sonnet, opus). Rest of a long message -> "more". Help -> "help".
 10. Chit-chat or anything unclear -> "answer" with a short helpful reply (mention "?" for commands if useful).
 
@@ -82,12 +82,12 @@ export const defaultRunner = (claudePath: string): ClaudeRunner => async (args, 
   // Never let a nested-session marker leak into the dispatcher run.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
-  const proc = Bun.spawn([claudePath, ...args, input], {
+  const proc = Bun.spawn([claudePath, ...args], {
     cwd: paths.routerCwd,
     env,
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin: new Blob([input]),
   });
   const timer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
   const [stdout, stderr, code] = await Promise.all([
@@ -183,7 +183,7 @@ export function decisionToAction(d: RouterDecision, originalText: string): Actio
     case "capture_send": return { type: "capture_send", target };
     case "capture_discard": return { type: "capture_discard" };
     case "spawn": return { type: "spawn", dir: d.dir ?? "", prompt: d.prompt || originalText, worktree: false };
-    case "resume": return { type: "resume_session", target };
+    case "resume": return { type: "resume_session", target: target ?? (d.name ? { name: d.name.toLowerCase() } : null) };
     case "interrupt": return { type: "halt", target };
     case "peek": return { type: "peek", target };
     case "retry": return { type: "retry", target };

@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { loadConfig, ConfigError, type Config } from "../shared/config.ts";
 import { loadSecrets } from "../shared/secrets.ts";
-import { paths, INTERNAL_URL } from "../shared/paths.ts";
+import { paths } from "../shared/paths.ts";
+import { hubJson } from "../shared/api.ts";
 import { VERSION } from "../shared/version.ts";
 import { createProvider } from "../providers/index.ts";
 import { findClaude } from "../hub/router.ts";
@@ -66,7 +67,7 @@ export async function doctor(): Promise<number> {
   else {
     h.version === VERSION ? ok(`Hub running (pid ${h.pid})`) : fail(`Hub is v${h.version} but the plugin is v${VERSION}`, "ccsms restart");
     serviceInstalled() ? ok(`Starts automatically (${serviceKind()})`) : warn("Hub isn't installed as a service; it won't start after a reboot. Fix: ccsms setup");
-    const s = (await (await fetch(`${INTERNAL_URL}/api/status`)).json()) as any;
+    const s = (await hubJson("/api/status")) as any;
     if (cfg && cfg.provider.name !== "fake") {
       if (!s.webhook) fail("Webhook not configured yet", "wait a few seconds after start, or check: ccsms logs");
       else if (!s.webhook.ok) fail(`Webhook setup failed: ${s.webhook.error}`, "check credentials/number, then: ccsms restart");

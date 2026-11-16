@@ -2,7 +2,8 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
-import { paths, INTERNAL_URL } from "../shared/paths.ts";
+import { paths } from "../shared/paths.ts";
+import { hubJson, hubFetch } from "../shared/api.ts";
 import { loadConfig, saveConfig, getKey, setKey, ConfigError, type ProviderName } from "../shared/config.ts";
 import { normalizeE164, maskNumber } from "../shared/e164.ts";
 import { VERSION } from "../shared/version.ts";
@@ -39,13 +40,7 @@ ${bold("Manage")}
 `;
 
 async function api(path: string, body?: unknown): Promise<any> {
-  const r = await fetch(`${INTERNAL_URL}${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(20_000),
-  });
-  return r.json();
+  return hubJson(path, body);
 }
 
 async function requireHub(): Promise<boolean> {
@@ -274,7 +269,7 @@ async function phone(): Promise<number> {
   // Real providers: poll the message log; fake provider: also stream.
   if (s.provider === "fake") {
     (async () => {
-      const r = await fetch(`${INTERNAL_URL}/api/fake/stream`);
+      const r = await hubFetch("/api/fake/stream", { signal: null });
       const reader = r.body!.getReader();
       const dec = new TextDecoder();
       let buf = "";
