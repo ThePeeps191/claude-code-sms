@@ -1,0 +1,294 @@
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const home = mkdtempSync(join(tmpdir(), "ccsms-test-"));
+process.env.CCSMS_HOME = home;
+
+const { Store } = await import("../src/shared/db.ts");
+const { saveConfig, DEFAULT_CONFIG } = await import("../src/shared/config.ts");
+const { Hub } = await import("../src/hub/hub.ts");
+const { FakeProvider } = await import("../src/providers/fake.ts");
+
+const OWNER = "+15550001234";
+const STRANGER = "+15559999999";
+
+type Sent = { to: string; body: string };
+
+function makeHub(opts: { router?: (input: string) => any; summary?: string; cfg?: (c: any) => void } = {}) {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.owners.numbers = [OWNER];
+  cfg.modes.doneSettleSeconds = 0;
+  cfg.tunnel.kind = "none";
+  opts.cfg?.(cfg);
+  const file = join(home, `config-${Math.random()}.toml`);
+  saveConfig(cfg, file);
+  const sent: Sent[] = [];
+  const provider = new FakeProvider((to, body) => sent.push({ to, body }));
+  const routerCalls: string[] = [];
+  const runner = async (args: string[], input: string) => {
+    if (args.includes("--json-schema")) {
+      routerCalls.push(input);
+      const d = opts.router?.(input) ?? { action: "answer", reply: "ok" };
+      return { ok: true, stdout: JSON.stringify({ structured_output: d, is_error: false }), stderr: "" };
+    }
+    return { ok: true, stdout: JSON.stringify({ result: opts.summary ?? "Summarized.", is_error: false }), stderr: "" };
+  };
+  const hub = new Hub(new Store(":memory:"), { runner, provider, configFile: file, noTimers: true });
+  hub.outbox.batchMs = 10;
+  hub.debounceMs = 0;
+  return { hub, sent, routerCalls };
+}
+
+function bridge(hub: InstanceType<typeof Hub>, sessionId: string, opts: { cwd?: string; inbound?: boolean; pid?: number } = {}) {
+  const got: any[] = [];
+  const conn = { sessionId: null as string | null, claudePid: null as number | null, version: "", send: (m: any) => got.push(m) };
+  const w = hub.onBridgeHello(conn as any, {
+    t: "hello", pid: 1, claudePid: opts.pid ?? process.pid, sessionId, cwd: opts.cwd ?? "/tmp/webapp", name: null,
+    inbound: opts.inbound ?? true, tmuxPane: null, version: "test",
+  });
+  return { conn, got, welcome: w };
+}
+
+const flush = async (hub: InstanceType<typeof Hub>) => { await Bun.sleep(30); await hub.outbox.drain(); };
+const text = (hub: InstanceType<typeof Hub>, body: string, from = OWNER) => hub.processText(from, body);
+
+describe("hub", () => {
+  test("ignores texts from numbers that aren't owners", async () => {
+    const { hub, sent, routerCalls } = makeHub();
+    hub.onInbound({ kind: "message", id: "1", from: STRANGER, to: "", text: "status", mediaCount: 0 });
+    await flush(hub);
+    expect(sent).toEqual([]);
+    expect(routerCalls).toEqual([]);
+  });
+
+  test("status lists sessions", async () => {
+    const { hub, sent } = makeHub();
+    bridge(hub, "s1", { cwd: "/code/webapp" });
+    await text(hub, "status");
+    await flush(hub);
+    expect(sent[0].to).toBe(OWNER);
+    expect(sent[0].body).toContain("1 webapp idle");
+  });
+
+  test("explicit @name delivers verbatim to the bridge without an ack", async () => {
+    const { hub, sent } = makeHub();
+    const b = bridge(hub, "s1", { cwd: "/code/webapp" });
+    await text(hub, "@webapp add a dark mode toggle");
+    await flush(hub);
+    expect(b.got.find((m) => m.t === "deliver")).toMatchObject({ content: "add a dark mode toggle", meta: { kind: "prompt" } });
+    expect(sent).toEqual([]);
+  });
+
+  test("router decides the target; text is never rewritten", async () => {
+    const { hub } = makeHub({ router: () => ({ action: "deliver", target: 2, kind: "prompt", reply: "rewritten" }) });
+    bridge(hub, "s1", { cwd: "/code/webapp" });
+    const b2 = bridge(hub, "s2", { cwd: "/code/mlhw" });
+    await text(hub, "use the cleaned dataset for fig 2");
+    expect(b2.got.find((m) => m.t === "deliver")?.content).toBe("use the cleaned dataset for fig 2");
+  });
+
+  test("clarify then numeric choice delivers the original text", async () => {
+    const { hub, sent } = makeHub({ router: () => ({ action: "clarify", reply: "Which? 1 webapp 2 mlhw" }) });
+    bridge(hub, "s1", { cwd: "/code/webapp" });
+    const b2 = bridge(hub, "s2", { cwd: "/code/mlhw" });
+    await text(hub, "run the tests");
+    await flush(hub);
+    expect(sent.at(-1)!.body).toContain("Which?");
+    await text(hub, "2");
+    expect(b2.got.find((m) => m.t === "deliver")?.content).toBe("run the tests");
+  });
+
+  test("away: Stop -> DONE text with the first paragraph", async () => {
+    const { hub, sent } = makeHub();
+    bridge(hub, "s1", { cwd: "/code/webapp" });
+    hub.setMode("away");
+    hub.onHook("UserPromptSubmit", { session_id: "s1", prompt: "x" });
+    hub.onHook("PostToolUse", { session_id: "s1", tool_name: "Edit", tool_input: { file_path: "/a/b.ts" } });
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "**Added the toggle.** Tests pass.\n\n## Details\nlots" });
+    await Bun.sleep(20);
+    await flush(hub);
+    expect(sent.length).toBe(1);
+    expect(sent[0].body).toMatch(/^webapp: DONE .*Added the toggle\. Tests pass\. Reply to continue\.$/);
+  });
+
+  test("home: no DONE unless the session is watched", async () => {
+    const { hub, sent } = makeHub();
+    bridge(hub, "s1");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Done." });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent).toEqual([]);
+    hub.store.updateSession("s1", { watch: "watched" });
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Done again." });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent.length).toBe(1);
+  });
+
+  test("no DONE while background tasks are running", async () => {
+    const { hub, sent } = makeHub();
+    bridge(hub, "s1");
+    hub.setMode("away");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Waiting on agent.", background_tasks: [{ id: "a" }] });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent).toEqual([]);
+  });
+
+  test("long final messages go through the summarizer", async () => {
+    const { hub, sent } = makeHub({ summary: "Short summary." });
+    bridge(hub, "s1");
+    hub.setMode("away");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "word ".repeat(120) });
+    await Bun.sleep(30); await flush(hub);
+    expect(sent[0].body).toContain("Short summary.");
+  });
+
+  test("sms_reply after the last edit suppresses the DONE duplicate", async () => {
+    const { hub, sent } = makeHub();
+    const b = bridge(hub, "s1");
+    hub.setMode("away");
+    hub.onHook("UserPromptSubmit", { session_id: "s1" });
+    hub.onHook("PostToolUse", { session_id: "s1", tool_name: "Edit", tool_input: {} });
+    await Bun.sleep(2);
+    const r = await hub.onBridgeRequest(b.conn as any, { t: "req", id: 1, op: "reply", args: { text: "Fixed it." } });
+    expect(r).toBe("sent");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Fixed it." });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent.length).toBe(1);
+    expect(sent[0].body).toBe("s1: Fixed it.".replace("s1", hub.store.session("s1")!.name));
+  });
+
+  test("capture mode: verbatim parts, send, confirm", async () => {
+    const { hub, sent, routerCalls } = makeHub();
+    const b = bridge(hub, "s1");
+    await text(hub, "prompt");
+    await text(hub, "Refactor auth.");
+    await text(hub, "stop using redux");
+    await text(hub, "Keep tests green.");
+    await text(hub, "send");
+    await flush(hub);
+    expect(sent.at(-1)!.body).toContain("3 parts");
+    await text(hub, "y");
+    expect(b.got.find((m) => m.t === "deliver")?.content).toBe("Refactor auth.\n\nstop using redux\n\nKeep tests green.");
+    expect(routerCalls).toEqual([]);
+  });
+
+  test("sms_ask with options: replying 1 delivers the answer", async () => {
+    const { hub } = makeHub();
+    const b = bridge(hub, "s1");
+    hub.setMode("away");
+    const r = await hub.onBridgeRequest(b.conn as any, { t: "req", id: 1, op: "ask", args: { question: "Which DB?", options: ["Redis", "SQLite"] } });
+    expect(r).toContain("sent");
+    await text(hub, "1");
+    expect(b.got.find((m) => m.t === "deliver")).toMatchObject({ content: "1 (Redis)", meta: { kind: "answer" } });
+  });
+
+  test("paused holds outcomes and resume sends one digest", async () => {
+    const { hub, sent } = makeHub();
+    bridge(hub, "s1");
+    hub.setMode("away");
+    hub.setMode("paused");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "All done." });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent).toEqual([]);
+    hub.setMode("resume");
+    await flush(hub);
+    expect(sent.length).toBe(1);
+    expect(sent[0].body).toStartWith("While paused:");
+    expect(hub.mode).toBe("away");
+  });
+
+  test("budget: outcomes are dropped once the daily budget is used", async () => {
+    const { hub, sent } = makeHub({ cfg: (c) => { c.budget.dailySegments = 2; } });
+    bridge(hub, "s1");
+    hub.setMode("away");
+    await text(hub, "status");
+    await text(hub, "status");
+    await flush(hub);
+    const before = sent.length;
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "Done." });
+    await Bun.sleep(20); await flush(hub);
+    expect(sent.slice(before).some((s) => s.body.includes("DONE"))).toBe(false);
+  });
+
+  test("mode change is injected once via hook additionalContext", () => {
+    const { hub } = makeHub();
+    bridge(hub, "s1");
+    expect(hub.onHook("PostToolUse", { session_id: "s1", tool_name: "Read", tool_input: {} })).toEqual({});
+    hub.setMode("away");
+    const r = hub.onHook("PostToolUse", { session_id: "s1", tool_name: "Read", tool_input: {} }) as any;
+    expect(r.hookSpecificOutput.additionalContext).toContain("left the computer");
+    expect(hub.onHook("PostToolUse", { session_id: "s1", tool_name: "Read", tool_input: {} })).toEqual({});
+  });
+
+  test("carrier opt-out keywords are never processed", async () => {
+    const { hub, sent, routerCalls } = makeHub();
+    hub.onInbound({ kind: "message", id: "1", from: OWNER, to: "", text: "STOP", mediaCount: 0 });
+    await flush(hub);
+    expect(sent).toEqual([]);
+    expect(routerCalls).toEqual([]);
+    expect(hub.store.get("optOutWarning", null)).not.toBeNull();
+  });
+
+  test("PIN locks prompts until unlocked", async () => {
+    const { hub, sent } = makeHub({ cfg: (c) => { c.security.unlockPin = "4821"; } });
+    const b = bridge(hub, "s1");
+    await text(hub, "@s1 do it".replace("s1", hub.store.session("s1")!.name));
+    await flush(hub);
+    expect(sent.at(-1)!.body).toContain("Locked");
+    expect(b.got.some((m) => m.t === "deliver")).toBe(false);
+    await text(hub, "unlock 4821");
+    await text(hub, `@${hub.store.session("s1")!.name} do it`);
+    expect(b.got.some((m) => m.t === "deliver")).toBe(true);
+  });
+
+  test("sessions without the channel can't receive texts and say so", async () => {
+    const { hub, sent } = makeHub();
+    hub.onHook("SessionStart", { session_id: "plain", cwd: "/code/plain", source: "startup" });
+    await text(hub, "@plain hi");
+    await flush(hub);
+    expect(sent.at(-1)!.body).toContain("can't receive texts");
+  });
+
+  test("milestone updates only for watched sessions and are superseded by DONE", async () => {
+    const { hub, sent } = makeHub();
+    const b = bridge(hub, "s1");
+    hub.setMode("away");
+    const r1 = await hub.onBridgeRequest(b.conn as any, { t: "req", id: 1, op: "update", args: { text: "Phase 1 done" } });
+    expect(r1).toContain("not sent");
+    hub.store.updateSession("s1", { watch: "watched" });
+    hub.outbox.batchMs = 500;
+    const r2 = await hub.onBridgeRequest(b.conn as any, { t: "req", id: 2, op: "update", args: { text: "Phase 1 done" } });
+    expect(r2).toContain("queued");
+    hub.onHook("Stop", { session_id: "s1", last_assistant_message: "All phases done." });
+    await Bun.sleep(30);
+    await hub.outbox.drain();
+    expect(sent.length).toBe(1);
+    expect(sent[0].body).toContain("DONE");
+    expect(sent[0].body).not.toContain("Phase 1");
+  });
+
+  test("/clear re-keys the session and keeps its number", () => {
+    const { hub } = makeHub();
+    const b = bridge(hub, "old");
+    const num = hub.store.session("old")!.num;
+    hub.onBridgeHello(b.conn as any, { t: "hello", pid: 1, claudePid: process.pid, sessionId: "new", cwd: "/tmp/webapp", name: null, inbound: true, tmuxPane: null, version: "t", prevSessionId: "old" } as any);
+    expect(hub.store.session("old")).toBeNull();
+    expect(hub.store.session("new")!.num).toBe(num);
+  });
+
+  test("long replies are paged with MORE", async () => {
+    const { hub, sent } = makeHub();
+    for (let i = 0; i < 9; i++) bridge(hub, `s${i}`, { cwd: `/code/project-number-${i}` });
+    hub.store.db.query("UPDATE sessions SET last_summary = ?").run("x".repeat(70));
+    await text(hub, "status");
+    await flush(hub);
+    expect(sent.at(-1)!.body).toContain("(MORE 1/");
+    await text(hub, "more");
+    await flush(hub);
+    expect(sent.at(-1)!.body).toMatch(/\(\d\/\d\)|\(MORE \d\/\d\)/);
+  });
+});
+
+afterEach(() => {});
+process.on("exit", () => { try { rmSync(home, { recursive: true, force: true }); } catch {} });

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-code-sms",
+  "description": "Text your Claude Code sessions from any phone.",
+  "owner": { "name": "ThePeeps191" },
+  "plugins": [
+    {
+      "name": "sms",
+      "source": "./",
+      "description": "SMS front door for Claude Code: get texts when sessions finish or need you, and text back prompts, answers and follow-ups.",
+      "category": "productivity"
+    }
+  ]
+}

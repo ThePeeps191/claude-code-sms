@@ -1,0 +1,12 @@
+{
+  "name": "sms",
+  "displayName": "claude-code-sms",
+  "version": "0.1.0",
+  "description": "SMS front door for Claude Code: get texts when sessions finish or need you, and text back prompts, answers and follow-ups from any phone.",
+  "author": { "name": "ThePeeps191", "url": "https://github.com/ThePeeps191" },
+  "homepage": "https://github.com/ThePeeps191/claude-code-sms",
+  "repository": "https://github.com/ThePeeps191/claude-code-sms",
+  "license": "MIT",
+  "keywords": ["sms", "notifications", "remote", "channels", "telnyx", "twilio"],
+  "channels": [{ "server": "sms", "displayName": "SMS" }]
+}

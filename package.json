@@ -1,0 +1,24 @@
+{
+  "name": "claude-code-sms",
+  "version": "0.1.0",
+  "description": "Text your Claude Code sessions: SMS updates, replies and follow-up prompts from any phone.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "bridge": "bun install --no-summary --frozen-lockfile 1>&2 && bun src/bridge/main.ts",
+    "hub": "bun install --no-summary --frozen-lockfile 1>&2 && bun src/hub/main.ts",
+    "cli": "bun install --no-summary --frozen-lockfile 1>&2 && bun src/cli/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "smol-toml": "^1.3.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
