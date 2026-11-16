@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# claude-code-sms CLI (plugin copy; on the Bash PATH inside Claude Code sessions).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -d "$ROOT/node_modules" ]; then (cd "$ROOT" && bun install --no-summary --frozen-lockfile >/dev/null 2>&1); fi
+exec bun "$ROOT/src/cli/main.ts" "$@"
