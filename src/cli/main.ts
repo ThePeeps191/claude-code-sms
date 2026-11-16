@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { paths, INTERNAL_URL } from "../shared/paths.ts";
 import { loadConfig, saveConfig, getKey, setKey, ConfigError, type ProviderName } from "../shared/config.ts";
@@ -78,9 +78,10 @@ async function main(argv: string[]): Promise<number> {
       console.log(VERSION); return 0;
 
     case "hub": {
-      await import("../hub/main.ts");
-      await new Promise(() => {}); // run forever
-      return 0;
+      // Run the hub as its own process (keeps the hub's module graph and signals simple).
+      const p = Bun.spawn([process.execPath, join(import.meta.dir, "..", "hub", "main.ts")], { stdio: ["ignore", "inherit", "inherit"] });
+      for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => p.kill(sig));
+      return await p.exited;
     }
 
     case "setup": {
@@ -323,5 +324,4 @@ async function uninstall(args: string[]): Promise<number> {
   return 0;
 }
 
-const code = await main(process.argv.slice(2));
-if (process.argv[2] !== "hub") process.exit(code);
+process.exit(await main(process.argv.slice(2)));

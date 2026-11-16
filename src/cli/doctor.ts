@@ -6,7 +6,8 @@ import { VERSION } from "../shared/version.ts";
 import { createProvider } from "../providers/index.ts";
 import { findClaude } from "../hub/router.ts";
 import { tmuxAvailable } from "../hub/tmux.ts";
-import { hubHealthy, serviceInstalled, serviceKind } from "./service.ts";
+import { hubHealthy, serviceInstalled, serviceKind, protectedLocation } from "./service.ts";
+import { readInstall } from "./install.ts";
 import { ok, bad, warn, bold, dim } from "./ui.ts";
 
 export async function doctor(): Promise<number> {
@@ -32,6 +33,10 @@ export async function doctor(): Promise<number> {
     else if (me.enabled === false) fail("The sms plugin is disabled", "claude plugin enable sms@claude-code-sms");
     else ok(`Plugin ${me.id} ${me.version ?? ""}`);
   } catch { warn("Couldn't check plugins (claude plugin list --json failed)"); }
+
+  const root = readInstall().pluginRoot as string | undefined;
+  const prot = root ? protectedLocation(root) : null;
+  if (prot && serviceInstalled()) fail(`The hub service runs from ~/${prot}, which macOS blocks for background services`, "install the plugin from its marketplace (claude plugin install sms --marketplace ThePeeps191/claude-code-sms), then ccsms setup");
 
   // Config
   let cfg: Config | null = null;

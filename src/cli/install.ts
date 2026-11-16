@@ -35,6 +35,7 @@ fi
 [ -d "$ROOT" ] || ROOT=${JSON.stringify(root)}
 [ -x "$BUN" ] || BUN=$(command -v bun || echo ${JSON.stringify(bun)})
 if [ ! -d "$ROOT/node_modules" ]; then (cd "$ROOT" && "$BUN" install --no-summary --frozen-lockfile >/dev/null 2>&1); fi
+if [ "$1" = "hub" ]; then exec "$BUN" "$ROOT/src/hub/main.ts"; fi
 exec "$BUN" "$ROOT/src/cli/main.ts" "$@"
 `;
   writeFileSync(paths.shim, shim);

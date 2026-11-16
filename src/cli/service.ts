@@ -43,6 +43,16 @@ function servicePath(): string {
   return [...dirs].join(":");
 }
 
+/** macOS blocks background services from reading Desktop/Documents/Downloads without a privacy grant. */
+export function protectedLocation(dir: string): string | null {
+  if (platform() !== "darwin") return null;
+  for (const f of ["Desktop", "Documents", "Downloads"]) {
+    const p = join(homedir(), f);
+    if (dir === p || dir.startsWith(p + "/")) return f;
+  }
+  return null;
+}
+
 export function serviceKind(): "launchd" | "systemd" | "none" {
   if (platform() === "darwin") return "launchd";
   if (platform() === "linux" && sh(["systemctl", "--user", "--version"]).ok) return "systemd";

@@ -8,8 +8,8 @@ import { paths, INTERNAL_URL } from "../shared/paths.ts";
 import { createProvider, destinationsFor } from "../providers/index.ts";
 import { findClaude } from "../hub/router.ts";
 import { tmuxAvailable } from "../hub/tmux.ts";
-import { installShims, CHANNEL_SPEC } from "./install.ts";
-import { installService, startHub, restartHub, hubHealthy, waitForHub } from "./service.ts";
+import { installShims, CHANNEL_SPEC, repoRoot } from "./install.ts";
+import { installService, startHub, restartHub, hubHealthy, waitForHub, protectedLocation } from "./service.ts";
 import { ask, askSecret, choose, confirm, ok, bad, warn, info, step, bold, dim, interactive, setAssumeYes } from "./ui.ts";
 
 export interface SetupFlags {
@@ -201,6 +201,12 @@ export async function setup(flags: SetupFlags): Promise<number> {
   ok(`Commands: ${sh.linked.map((l) => l.replace(homedir(), "~")).join(", ") || "(could not link into ~/.local/bin)"}`);
   if (sh.pathHint) warn(sh.pathHint);
   let running = false;
+  const prot = protectedLocation(repoRoot());
+  if (prot && !flags.noService) {
+    warn(`The plugin files are in ~/${prot}, which macOS doesn't let background services read. The hub would hang.`);
+    warn("Install the plugin from its marketplace instead (it lives under ~/.claude/plugins), or run the hub in a terminal: ccsms hub");
+    flags.noService = true;
+  }
   if (!flags.noService) {
     const s = installService();
     s.ok ? ok(`Service: ${s.detail}`) : warn(`Service: ${s.detail}`);
