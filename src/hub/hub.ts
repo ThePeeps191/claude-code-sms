@@ -17,6 +17,7 @@ import { stripMarkdown, firstParagraph, fmtDuration, describeTool, isSubstantive
 import * as tmux from "./tmux.ts";
 import { userIdleSeconds } from "./idle.ts";
 import type { HubMsg, BridgeHello, BridgeRequest } from "../shared/protocol.ts";
+import { VERSION } from "../shared/version.ts";
 
 const log = logger("hub");
 
@@ -251,8 +252,19 @@ export class Hub {
     conn.version = h.version;
     this.bridges.set(row.id, conn);
     this.store.addEvent(row.id, "bridge", h.inbound ? "connected (can receive texts)" : "connected (send only)");
+    if (h.version && h.version !== VERSION && isNewer(h.version, VERSION)) this.restartForUpdate(h.version);
     log.info(`bridge connected: ${row.num} ${row.name} inbound=${h.inbound}`);
     return { sessionId: row.id, name: row.name, num: row.num };
+  }
+
+  private restarting = false;
+  /** A bridge from a newer plugin version connected: restart onto the new code (service-managed hubs only). */
+  private restartForUpdate(newVersion: string) {
+    const managed = Boolean(process.env.XPC_SERVICE_NAME?.includes("claude-code-sms") || process.env.INVOCATION_ID);
+    if (this.restarting || !managed) { if (!managed) log.warn(`plugin updated to ${newVersion}; restart the hub to use it (ccsms restart)`); return; }
+    this.restarting = true;
+    log.info(`plugin updated (${VERSION} -> ${newVersion}); restarting the hub`);
+    setTimeout(async () => { await this.outbox.drain(); process.exit(75); }, 2000);
   }
 
   onBridgeClose(conn: BridgeConn) {
@@ -1057,6 +1069,11 @@ export class Hub {
 }
 
 // ------------------------------------------------------------------ utils
+function isNewer(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) { if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0); }
+  return false;
+}
 function mtime(f: string): number {
   try { return statSync(f).mtimeMs; } catch { return 0; }
 }
