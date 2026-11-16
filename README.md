@@ -1,141 +1,279 @@
+<div align="center">
+
 # claude-code-sms
 
-**Text your Claude Code sessions.** Leave Claude working, walk away, and keep going from any phone with plain SMS: get a text when a session finishes or needs you, and text back the next prompt, an answer, or a question.
+**Text your Claude Code sessions.**
 
-```
+Leave Claude working, walk away, and keep going from any phone over plain SMS.<br>
+Get a text when a session finishes or needs you; text back the next prompt, an answer, or a question.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757.svg)](https://code.claude.com/docs/en/plugins)
+
+[Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Cost](#cost) · [Security](#security) · [Docs](docs/)
+
+</div>
+
+---
+
+```text
 you:  away
 hub:  Away: I'll text when sessions finish, fail or need you.
-...
+
 hub:  webapp: DONE 14m. Checkout page added, tests pass. Needs STRIPE_SECRET in .env. Reply to continue.
 you:  nice. now add a test for the refund flow
-...
+
 hub:  ml-hw: Q: Fig 2 from 1 cleaned data 2 raw data
 you:  1
-...
+
 you:  what's running?
 hub:  webapp is busy (6m) editing refund.test.ts. ml-hw is idle: figure 2 done.
 ```
 
-- **Texts out only when they matter:** finished, stuck, broken, or something you asked for. A daily budget caps cost.
-- **Texts in, understood:** a Claude dispatcher works out which session you mean. You can send a long prompt over several texts, answer questions with a number, or say "send it to webapp instead".
-- **Many sessions:** route by name (`@webapp ...`), number (`2: ...`), or just context.
-- **Only you:** it acts only on texts from the phone numbers you configure.
-- **Runs on your Claude subscription:** the dispatcher is headless Claude Code (`claude -p`), using your normal login.
-- **Bring your own SMS provider:** Telnyx or Twilio today; the provider layer is pluggable.
-- **Never touches permissions:** sessions keep whatever permission mode you run them in.
+No app to install on your phone, no chat account, no data plan needed. If your phone can send a text, it can drive Claude Code.
+
+## Why
+
+Claude Code is happy to work for half an hour on its own. But it stops when it finishes, when it has a question, or when it hits an error, and nothing moves until you're back at the keyboard. claude-code-sms closes that gap: the moment a session needs you, your phone buzzes, and your reply goes straight back into the session.
+
+## Features
+
+- **Texts only when they matter.** You hear about a session when it finishes, gets stuck, fails, or reaches something you asked to be told about. Short bursts are batched into one text, and a daily budget caps what you can spend.
+- **Replies in plain language.** A Claude dispatcher reads each text and works out what you mean, so replies like "yeah do it", "the ml one", "send it to webapp instead" and "don't text me till 3pm" all work.
+- **Many sessions at once.** Address a session by name (`@webapp ...`), by number (`2: ...`), or just by context.
+- **Answer questions from your phone.** When Claude asks you something, you get numbered options. Reply with a digit or with your own words.
+- **Long prompts.** Write one prompt across several texts, then send it.
+- **Start, resume and interrupt sessions by text.** You can also peek at a session's screen.
+- **Uses your Claude subscription.** The dispatcher is headless Claude Code (`claude -p`) running on your normal login, with no API key. It uses Sonnet by default; text `model haiku` to switch.
+- **Bring your own SMS provider.** Telnyx and Twilio are supported, in any country they serve, and the provider layer is pluggable.
+- **Only you can use it.** It acts only on signed webhooks from your provider, and only on texts from the numbers you configure.
+- **Never touches permissions.** Sessions keep whatever permission mode you start them in. The plugin never approves or denies anything for Claude.
+
+## Requirements
+
+- **macOS or Linux.** The computer has to stay on while you're away; on macOS the hub keeps it from sleeping.
+- **[Claude Code](https://claude.com/claude-code)**, installed and logged in.
+- **An SMS provider account with a phone number:**
+  - [Telnyx](docs/providers/telnyx.md): the cheapest option, about $1/month for a number;
+  - [Twilio](docs/providers/twilio.md): widely available, slightly more expensive.
+
+  For the best delivery, use a number in the same country as your phone.
+- **[Bun](https://bun.sh) and [tmux](https://github.com/tmux/tmux).** The installer offers to install both.
 
 ## Install
-
-Requirements:
-- macOS or Linux
-- [Claude Code](https://claude.com/claude-code)
-- an SMS provider account: [Telnyx](docs/providers/telnyx.md) (cheapest) or [Twilio](docs/providers/twilio.md)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ThePeeps191/claude-code-sms/main/install.sh | bash
 ```
 
-The installer asks before installing [Bun](https://bun.sh) or tmux if they're missing. It then installs the Claude Code plugin and the `ccsms` / `claude-sms` commands, and runs the setup wizard. The wizard covers:
-- provider credentials (entered at a hidden prompt);
-- your phone number(s);
-- the number texts come from;
-- a tunnel (no account needed);
-- a background service;
-- a test text you reply to.
+The installer asks before installing anything. It sets up the Claude Code plugin and the `ccsms` and `claude-sms` commands, then starts a setup wizard that walks you through:
 
-**Prefer to let Claude do it?** Paste this into Claude Code:
+1. **Provider credentials:** typed at a hidden prompt and stored only on your machine.
+2. **Your phone number(s):** the only numbers allowed to control your sessions.
+3. **The number texts come from:** pick one on your account, or buy one. The wizard shows the price and asks first.
+4. **A public tunnel:** so your provider can reach your computer. The default Cloudflare quick tunnel needs no account.
+5. **A background service:** launchd on macOS, systemd on Linux.
+6. **A test text:** you reply `OK` to confirm both directions work.
+
+The commands go into `~/.local/bin`. If your shell can't find `claude-sms` afterwards, add this to your shell profile:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+<details>
+<summary><b>Let Claude set it up for you</b></summary>
+
+Paste this into Claude Code:
 
 > Install claude-code-sms from github.com/ThePeeps191/claude-code-sms (run its install.sh with --no-wizard) and set it up for me with ccsms. Ask me to run `ccsms login <provider>` in my own terminal for the credentials.
 
-**Or install the plugin manually:** run `claude plugin install sms --marketplace ThePeeps191/claude-code-sms`, then `~/.claude/plugins/.../bin/ccsms setup`. [docs/SETUP.md](docs/SETUP.md) has every step.
+Claude installs everything and runs setup. You only type your provider credentials, in your own terminal.
 
-## Use
+</details>
 
-1. **Start sessions with `claude-sms`** instead of `claude`. It takes the same arguments, runs Claude inside tmux, and turns on the SMS channel. On the first screen, choose *"I am using this for local development"*.
-   Sessions started with plain `claude` still text you when they finish; they just can't receive texts.
-2. **Text `away`** when you leave. When you're back, text `home`, or just sit down at the computer.
-3. **Text normally.** The dispatcher works out what you mean. Text `?` for the command list.
+<details>
+<summary><b>Install manually</b></summary>
 
-| Text | Does |
+```bash
+claude plugin marketplace add ThePeeps191/claude-code-sms
+claude plugin install sms@claude-code-sms
+# then, from the plugin folder shown by `claude plugin list --json` ("installPath"):
+bun install && bun src/cli/main.ts install    # links ccsms + claude-sms into ~/.local/bin
+ccsms login telnyx                            # or: ccsms login twilio
+ccsms setup
+```
+
+[docs/SETUP.md](docs/SETUP.md) explains every step and option, including stable tunnel URLs and non-interactive setup.
+
+</details>
+
+## Usage
+
+### 1. Start sessions with `claude-sms`
+
+```bash
+cd ~/code/webapp
+claude-sms            # use it instead of `claude`; it takes the same arguments
+```
+
+`claude-sms` runs Claude Code inside tmux with the SMS channel turned on. On the first screen, Claude Code asks you to confirm the development channel: choose **"I am using this for local development"**.
+
+Sessions started with plain `claude` still text you when they finish, but they can't receive texts.
+
+### 2. Tell it you're leaving
+
+Text `away`, or run `ccsms away`. When you're back, text `home`, or just start using the computer again: it switches to home mode on its own.
+
+### 3. Text normally
+
+The dispatcher routes ordinary messages and asks when it's unsure. These shortcuts skip the guesswork:
+
+| Text | What it does |
 |---|---|
-| `status` / `what's running?` | List sessions and what they're doing |
+| `status` or `what's running?` | List sessions and what each is doing |
 | `@webapp <msg>` or `2: <msg>` | Send to a specific session |
-| `<anything else>` | The dispatcher routes it (and asks if it's ambiguous) |
-| `prompt` ... `send` / `discard` | Write one prompt across several texts |
-| `away` / `home` / `pause` / `resume` / `quiet until 3pm` | When to text you |
-| `watch webapp` / `mute webapp` | Per-session: milestones too / no texts |
-| `peek webapp` / `halt webapp` | See its screen / interrupt it (Esc) |
-| `new homework: outline my essay` | Start a session (opt-in, see `spawn.roots`) |
-| `resume webapp` / `retry webapp` | Restart an ended session / continue after a usage limit |
+| *anything else* | The dispatcher routes it, and asks if it's ambiguous |
+| `prompt` … `send` / `discard` | Write one prompt across several texts |
+| `away` / `home` / `pause` / `resume` | Choose when you get texts |
+| `quiet until 3pm` | Pause texts until a time |
+| `watch webapp` / `mute webapp` | Also get milestone updates from a session / silence it |
+| `peek webapp` | See the last lines of its screen |
+| `halt webapp` | Interrupt it (like pressing Esc) |
+| `new homework: outline my essay` | Start a new session (opt-in; see [Configuration](#configuration)) |
+| `resume webapp` | Restart a session that ended |
+| `retry webapp` | Continue after a usage limit resets |
 | `model haiku` | Switch the dispatcher model |
-| `more` / `cost` / `?` | Next page / spend / help |
+| `more` / `cost` / `?` | Next page of a long text / today's spend / help |
 
-> **Never text just `STOP`.** Carriers and providers treat it as "unsubscribe" and block further texts to you. Text `START` to undo it. To interrupt a session, use `halt`.
+> [!WARNING]
+> **Never text just `STOP`.** Carriers and providers treat it as "unsubscribe" and block all further texts to you until you text `START`. To interrupt a session, text `halt`.
 
-Inside Claude Code you can also say "text me when this is done" (the session calls `sms_watch`), or use `/sms:away`, `/sms:home`, `/sms:status`, `/sms:model`, `/sms:watch`.
+### Inside Claude Code
+
+Sessions get four tools: `sms_reply`, `sms_ask`, `sms_update` and `sms_watch`. Just say what you want: "text me when this is done", or "ask me on my phone which option I prefer".
+
+Slash commands: `/sms:status`, `/sms:away`, `/sms:home`, `/sms:pause`, `/sms:watch`, `/sms:model`, `/sms:unlock`, `/sms:setup`.
+
+### From the terminal
+
+| Command | What it does |
+|---|---|
+| `ccsms status` | Hub health, sessions, mode, today's texts |
+| `ccsms away` / `home` / `pause` / `resume` | Set the texting mode |
+| `ccsms watch <session> [on\|off\|quiet]` | Per-session notifications |
+| `ccsms doctor` | Check everything and print a fix for each problem |
+| `ccsms test [text]` | Send yourself a test text |
+| `ccsms phone` | Fake phone in your terminal (with the `fake` provider: no texts, no cost) |
+| `ccsms logs` | Follow the hub log |
+| `ccsms config ...` | Read or change settings |
+| `ccsms start` / `stop` / `restart` | Control the background hub |
 
 ## How it works
 
-```
+```text
  phone ⇄ SMS provider ⇄ tunnel ⇄ hub (background service) ⇄ bridge (one per Claude Code session)
                                     ↑
                      hooks report: finished, failed, waiting, activity
 ```
 
-- **Hub:** a small local service. It owns the provider connection, your number allowlist, the session list, texting modes and the outbound rules. It calls `claude -p` (tools disabled) to understand your texts and to shorten long summaries.
-- **Bridge:** a [Claude Code channel](https://code.claude.com/docs/en/channels) MCP server. It delivers your texts into the session and gives Claude `sms_reply`, `sms_ask`, `sms_update` and `sms_watch`.
-- **Hooks:** they make sure "done", "failed" and "waiting on you" texts never depend on Claude remembering to send them.
+- **Hub:** a small local service, written in TypeScript on Bun. It owns the provider connection, your number allowlist, the session list, texting modes and the rules for what's worth a text. To understand your texts and to shorten long summaries, it calls `claude -p` with every tool disabled.
+- **Bridge:** a [Claude Code channel](https://code.claude.com/docs/en/channels), an MCP server that runs inside each session. It delivers your texts into the conversation and gives Claude its SMS tools.
+- **Hooks:** they report when a session finishes, fails or waits on you. "Done" and "needs you" texts never depend on Claude remembering to send them.
 
-The full design is in [docs/DESIGN.md](docs/DESIGN.md).
+The full design, including the decisions behind it, is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Cost
 
-You pay your SMS provider per text segment, in both directions:
-- Telnyx: about $0.004 + carrier fees per segment.
-- Twilio: about $0.008 + carrier fees per segment.
-- The number itself costs about $1–2 per month.
+You pay your SMS provider per message segment, in both directions:
 
-A typical day of finishes, a question and a few replies is a few cents. The daily budget (`budget.dailySegments`, default 30) caps it, `cost` shows today's spend, and texts are normalized to plain characters so an emoji can't triple the price. The dispatcher's `claude -p` calls use your Claude plan's usage. They're small, and `model haiku` makes them lighter.
+| | Per segment (approx.) | Number |
+|---|---|---|
+| Telnyx | $0.004 + carrier fees | about $1/month |
+| Twilio | $0.008 + carrier fees | about $1–2/month |
+
+A typical day of a few finishes, a question and some replies costs a few cents. Three things keep it small:
+- a daily cap: `budget.dailySegments`, 30 by default;
+- outgoing texts converted to plain characters, so one emoji can't triple a message's price;
+- the `cost` text, which shows today's spend.
+
+The dispatcher's `claude -p` calls count toward your Claude plan's usage. They're short, and `model haiku` makes them lighter still.
 
 ## Security
 
-- **Signed webhooks:** a text is acted on only if the provider's webhook signature checks out **and** the sender is one of your numbers. Everything else is ignored silently.
-- **Caller ID can be spoofed.** If your sessions run with broad permissions, set an unlock PIN (`ccsms config set security.unlockPin 4821`), then text `unlock 4821` to open a window. Text `lockdown` to ignore all texts until you run `ccsms unlock` at the computer.
-- **Fixed recipients:** texts go only to your configured numbers; no tool can choose a recipient. Common secret formats are scrubbed from outgoing texts.
-- **Your secrets stay local.** Credentials live in `~/.claude-code-sms/secrets.env` (mode 600) and are entered only at a hidden prompt, never in chat.
-- **What leaves your machine:** message text passes through your SMS provider, and short routing context goes to Claude.
+- **Verified senders.** A text is acted on only if the provider's webhook signature checks out **and** it comes from one of your numbers. Anything else is silently ignored.
+- **Optional PIN.** Caller ID can be spoofed. If your sessions run with broad permissions, set a PIN with `ccsms config set security.unlockPin 4821`. Then text `unlock 4821` to open a 12-hour window. Text `lockdown` to ignore every text until you run `ccsms unlock` at the computer.
+- **Fixed recipients.** Texts go only to your configured numbers; no tool can choose who receives a text. Common secret formats, like API keys and tokens, are scrubbed from outgoing texts.
+- **Local secrets.** Credentials live in `~/.claude-code-sms/secrets.env` (mode 600) and are only ever typed at a hidden prompt.
+- **Locked-down local API.** The hub's control API requires a per-install token, so a web page in your browser can't send prompts to your sessions.
+- **What leaves your machine.** Message text passes through your SMS provider. Short routing context goes to Claude, under the same terms as the rest of your Claude Code usage.
 
-## Status
+## Configuration
 
-v0.1. Verified end to end on macOS with real Claude Code sessions: delivery, DONE texts, the dispatcher, questions, capture, peek/halt, starting and resuming sessions, the quick tunnel, the installer and self-update.
+Settings live in `~/.claude-code-sms/config.toml`. Change them with `ccsms config set <key> <value>` or by re-running `ccsms setup`. The ones you're most likely to want:
 
-Still to verify against live services:
-- real SMS through Telnyx and Twilio (the provider code is unit-tested against their documented formats);
+| Key | Default | Meaning |
+|---|---|---|
+| `owners.numbers` | (set by setup) | Phones allowed to control sessions (`ccsms config add-owner`) |
+| `router.model` | `sonnet` | Model that interprets your texts |
+| `budget.dailySegments` | `30` | Daily cap on outgoing segments |
+| `spawn.roots` | (none) | Folders where a text may start a new session (comma-separated) |
+| `security.unlockPin` | (none) | PIN required before texts are acted on |
+| `modes.autoHome` | `true` | Switch to home when you use the computer |
+| `modes.autoAway` | `false` | Switch to away after `autoAwayMinutes` of inactivity |
+| `modes.doneSettleSeconds` | `30` | How long a session must stay idle before "done" is texted |
+
+## Project status
+
+**Alpha (v0.1).** Verified end to end on macOS with real Claude Code sessions and a simulated phone:
+- delivery, done texts and dispatcher routing;
+- questions, multi-text prompts, and peek/halt;
+- starting and resuming sessions;
+- the quick tunnel, the installer and self-update.
+
+Not yet verified against live services:
+- real SMS through Telnyx and Twilio. The provider code is unit-tested against their documented webhook formats.
 - the Linux systemd service.
 
-Reports and PRs are welcome.
+Bug reports from real-world setups are especially welcome.
+
+**Known limitations:**
+- **Channels are a research preview.** Claude Code channels aren't generally available yet, so `claude-sms` loads this one as a development channel.
+- **Sessions you can text must run in tmux.** That's what lets the hub peek at and interrupt them. `claude-sms` handles this for you.
+- **The quick tunnel's URL changes on every restart.** The hub re-registers the webhook automatically, but a [stable URL](docs/SETUP.md) is more robust.
 
 ## Troubleshooting
 
-Run `ccsms doctor`: it checks everything and prints the fix for each problem. More help is in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md), or ask Claude: `/sms:setup why didn't I get a text?`
+Start with `ccsms doctor`: it checks the hub, provider, tunnel, webhook and service, and prints the fix for anything wrong. [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) covers common problems. You can also ask Claude: `/sms:setup why didn't I get a text?`
 
 ## Uninstall
 
 ```bash
-ccsms uninstall                      # stops the service, removes links, optionally deletes ~/.claude-code-sms
+ccsms uninstall                                # stops the service, removes the links, optionally deletes ~/.claude-code-sms
 claude plugin uninstall sms@claude-code-sms
 ```
 
-Your SMS number stays on your provider account; release it there if you don't need it.
+Your phone number stays on your provider account. Release it there if you no longer need it.
 
-## Development
+## Contributing
+
+Issues and pull requests are welcome. To work on it locally:
 
 ```bash
+git clone https://github.com/ThePeeps191/claude-code-sms && cd claude-code-sms
 bun install
-bun test                      # unit + hub behavior tests (no network)
+bun test                      # unit and hub behavior tests (no network, no cost)
+bunx tsc --noEmit             # typecheck
 bun test/router.live.ts       # live dispatcher eval (uses your Claude login)
-bunx tsc --noEmit
-ccsms phone                   # fake phone in a terminal (with provider "fake")
 ```
 
-MIT licensed. Not affiliated with Anthropic, Telnyx or Twilio.
+To try everything without sending real texts, set the provider to `fake` (`ccsms setup --provider fake`) and use `ccsms phone` as your phone.
+
+- **Adding an SMS provider:** implement the interface in [`src/providers/`](src/providers/). [`telnyx.ts`](src/providers/telnyx.ts) and [`twilio.ts`](src/providers/twilio.ts) are the references.
+- **Releasing:** bump the version in both `package.json` and `.claude-plugin/plugin.json`.
+
+## License
+
+[MIT](LICENSE). Not affiliated with Anthropic, Telnyx or Twilio.
