@@ -390,6 +390,7 @@ export class Hub {
         this.store.updateSession(id, { status: "idle", busy_since: null, last_summary: summary || s.last_summary });
         this.store.addEvent(id, "stop", summary.slice(0, 80));
         const bg = body.background_tasks;
+        log.debug(`stop ${s.name}: background_tasks=${JSON.stringify(bg ?? null).slice(0, 400)}`);
         const hasBackground = Array.isArray(bg) ? bg.length > 0 : bg && typeof bg === "object" ? Object.keys(bg).length > 0 : false;
         if (!hasBackground) this.scheduleDone(id);
         return {};
