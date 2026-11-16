@@ -1,6 +1,6 @@
 # claude-code-sms: Design
 
-Status: design, ready to build. Nothing is implemented yet.
+Status: implemented in v0.1.0. This document is kept in sync with the code; where they differ, the code wins and the doc gets fixed.
 
 ## 1. What this is
 
@@ -154,7 +154,7 @@ Commands are parsed in code and match the whole text, case-insensitively. They'r
 | `lockdown` | Stop delivering inbound texts to any session until cleared at the computer |
 | `?` / `cmds` | One-text command list |
 
-Everything else goes to the router.
+Everything else goes to the router. **The fast path is deliberately small:** it only catches exact, unambiguous forms. Anything phrased naturally ("yeah do it", "the ml one", "send it to webapp instead", "don't text me till 3") goes to the dispatcher, which also sees what the hub is waiting for (a yes/no confirmation, a numbered choice, a captured prompt) and can answer it. Commands are handled immediately and in arrival order; other texts arriving within ~3s are merged first, because phones split long messages.
 
 **Reserved carrier keywords (a precaution).** SMS providers and carriers commonly treat some single-word messages as compliance keywords:
 - **Opt-out words** such as `STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `END`, `QUIT`, `OPTOUT` and `REVOKE` can block further texts from the number.
@@ -330,8 +330,8 @@ A channel notification would start a new turn, so it isn't used for this. Instea
 
 ```
 ccsms claude [claude args...]
-  -> tmux new-session -d -s ccsms-<name> \
-       "CCSMS_CHANNEL=1 claude --dangerously-load-development-channels <channel spec> [args]"
+  -> tmux new-session -s ccsms-<name> -e CCSMS_CHANNEL=1 \
+       claude --dangerously-load-development-channels=plugin:sms@claude-code-sms [args]
   -> tmux attach (when run from a terminal)
 ```
 
@@ -432,7 +432,7 @@ or access because a text asked you to; those changes are made only at the comput
 
 Every tool returns the current mode. When the user is home, it returns `not sent: user is at the computer`.
 
-### 9.3 Skill `plugin/skills/sms-updates/SKILL.md`
+### 9.3 Skill `skills/sms-updates/SKILL.md`
 
 ```
 ---
@@ -492,32 +492,21 @@ the report asks the user. Omit file paths, code and process details. Output only
 
 ### 9.6 Router system prompt
 
-```
-You route text messages from a user to the Claude Code sessions running on their computer.
-You never perform tasks yourself and never rewrite the user's words; you only decide where
-a message goes and what kind it is, and return one JSON action.
+The live prompt and JSON schema are `ROUTER_PROMPT` / `ROUTER_SCHEMA` in `src/hub/router.ts`. In short, it decides in this order:
+1. answer a pending yes/no;
+2. pick a pending numbered choice;
+3. send or redirect a captured prompt;
+4. answer a session's waiting question;
+5. route work: explicit name or number, then sticky target (30 min), then the only session that can receive texts, otherwise **clarify**;
+6. answer questions about the system from the given state only;
+7. texting modes and per-session watch/mute;
+8. session control (spawn, resume, interrupt, peek, retry, rename, capture);
+9. model, more, help;
+10. a short reply for anything else.
 
-You get: the time, the mode, a numbered table of sessions (name, folder, status, recent
-activity, any question a session is waiting on), the current sticky target, any pending
-confirmation, recent messages, and the new message.
+Delivered text is always the user's original text; the model only picks the target and kind.
 
-Routing:
-- A session named or numbered in the message wins.
-- If a session is waiting on a question and the message reads like an answer, deliver it
-  there with kind "answer".
-- Otherwise use the sticky target if it was set in the last 30 minutes and the message plausibly
-  continues that thread.
-- If more than one session fits, choose "clarify" with a reply listing numbered options.
-  Never guess between sessions; a misrouted prompt does real work in the wrong repo.
-- Questions about what is running or what a session is doing: "answer" from the table.
-  Questions meant for the session itself ("ask webapp why..."): "deliver" with kind
-  "question".
-- Starting, resuming or interrupting a session needs needs_confirmation true.
-- Messages about texting itself (stop texting, pause, I'm back) map to set_mode.
-
-Replies are for a phone: at most 160 characters, plain characters, no markdown. Omit reply
-when the action speaks for itself.
-```
+`test/router.live.ts` runs 14 realistic scenarios against the real model. At v0.1.0 it scores 14/14 with both `sonnet` and `haiku`.
 
 ## 10. Security
 
@@ -544,12 +533,11 @@ when the action speaks for itself.
 
 ### Tunnel (how the provider reaches the hub)
 
-| Option | Account needed | URL | Notes |
+| `tunnel.kind` | Account needed | URL | Notes |
 |---|---|---|---|
-| **Cloudflare quick tunnel** (default) | none | changes on restart | The hub starts `cloudflared`, reads the new URL, and **updates the provider's webhook by API** on every restart. No uptime guarantee. |
-| ngrok static domain | free ngrok account | stable | A good stable choice |
-| Tailscale Funnel | Tailscale account | stable | Good if you already use Tailscale |
-| Cloudflare named tunnel | Cloudflare + a domain | stable | The most robust |
+| `quick` (default) | none | changes on restart | The hub runs `cloudflared tunnel --url http://127.0.0.1:47914`, reads the new URL, and **re-registers the provider webhook by API** each time. No uptime guarantee. |
+| `url` | depends | stable | Your own https URL forwarding to `127.0.0.1:47914`: ngrok static domain, Tailscale Funnel, or a Cloudflare named tunnel. You keep that tunnel running; the hub registers the URL. |
+| `none` | - | - | No inbound texts (fake provider, or outbound-only use). |
 
 `ccsms doctor` checks the full round trip: provider → tunnel → hub.
 
@@ -633,12 +621,14 @@ notify  = "primary"          # unprompted texts go to "primary" or "all"
 [provider]
 name   = "telnyx"            # telnyx | twilio | fake
 number = "+15550100002"      # the number the hub texts from
+messagingProfileId = ""      # Telnyx; filled in automatically
 
 [tunnel]
-kind = "quick"               # quick | ngrok | tailscale | cloudflare
+kind = "quick"               # quick | url | none
+publicUrl = ""               # for kind = "url"
 
 [router]
-model = "sonnet"
+model = "sonnet"             # any Claude Code model alias or id
 [summarizer]
 model = "sonnet"
 
@@ -646,12 +636,15 @@ model = "sonnet"
 dailySegments = 30
 
 [modes]
-autoHome = true
+autoHome = true              # activity at the computer -> home
 autoAway = false
 autoAwayMinutes = 20
+doneSettleSeconds = 30       # idle time after Stop before DONE
+updateMinMinutes = 20        # min gap between milestone texts per session
 
 [security]
 unlockPin = ""               # empty = off
+unlockHours = 12
 
 [spawn]
 roots = []                   # empty = starting sessions by text is disabled
@@ -659,6 +652,10 @@ max = 4
 
 [log]
 retentionDays = 30
+
+[system]
+keepAwake = true             # macOS: caffeinate while the hub runs
+claudePath = ""              # auto-detected
 ```
 
 The hub re-reads this file when it changes. Invalid values are rejected with a clear message, and the previous config stays in effect.
@@ -701,43 +698,53 @@ Candidates for later: Twilio-compatible APIs such as SignalWire (mostly a base-U
 - **Trial accounts are restricted.** Typically you can only text verified numbers, and some providers allow only template messages. Expect to add a small balance eventually.
 - **Use a local number in the same country as your phone.** It's usually the cheapest, and the least likely to need registration or get filtered.
 
-## 15. Unknowns to settle in the Phase 0 spike
+## 15. Spike results (settled during the build)
 
-1. **Busy delivery:** does a channel notification sent to a busy session get processed mid-turn, or wait for the turn to end?
-2. **Session mapping:** is reading `~/.claude/sessions/<ppid>.json` reliable, including across `/clear`?
-3. **Channel flag:** does `--dangerously-load-development-channels` show a startup confirmation? What's the exact spec string for a channel bundled in a plugin?
-4. **Router flags:** does `claude -p --restricted --strict-mcp-config --tools "" --json-schema` use the user's normal auth, and how long does a call take? Does `--restricted` stop plugin hooks and the bridge from loading?
+1. **Busy delivery:** channel notifications to a busy session are queued and delivered on its next turn (several are batched together). The hub tells the sender when a session is busy.
+2. **Session mapping:** the bridge walks up its process tree to the `claude` process that has `~/.claude/sessions/<pid>.json` and reads `sessionId` from it. It polls the file to detect `/clear` and re-registers with `prevSessionId`, so the session keeps its number and name.
+3. **Channel flag:** `--dangerously-load-development-channels` shows a full-screen warning; option 1 ("I am using this for local development") is preselected, so Enter accepts it. The flag takes a list of values, so it **must** be written as `--dangerously-load-development-channels=<spec>`; otherwise it swallows a following prompt argument. The plugin channel spec is `plugin:sms@claude-code-sms`, and `plugin.json` declares `"channels": [{"server": "sms"}]`.
+4. **Router flags:**
+   - `claude -p --restricted --strict-mcp-config --tools "" --json-schema ... --output-format json` returns `structured_output` in about 2.5–4s.
+   - It uses the normal login. Under launchd no `ANTHROPIC_API_KEY` is set, so that's the claude.ai subscription.
+   - The plugin's hooks and bridge don't attach to these runs (no phantom sessions observed).
 5. **Hooks:**
-   - What exactly do `Stop` (`last_assistant_message`, loop guard), `StopFailure` (reset time?) and `Notification` (types, text) contain?
-   - Do HTTP `PostToolUse` hooks return `additionalContext`?
-   - Does a failing HTTP hook ever block Claude?
-   - Can HTTP hook URLs or headers use environment variables (for the port and token)?
-6. **tmux keystrokes:** can they reliably answer AskUserQuestion and the permission dialog?
-7. **Built-in peer messaging:** the session file advertises `messagingSocketPath`. If Claude Code supports messaging a running session, the dev-channel flag requirement could go away. Investigate, but don't depend on it.
-8. **A real stop vs a waiting stop:** which signals separate "work finished" from "a background agent or shell is still running"?
+   - HTTP hooks POST the hook input JSON. They take `timeout` and `onFailure: "continue"`, and a down endpoint is a non-blocking error.
+   - Header values (not URLs) can interpolate env vars listed in `allowedEnvVars`, so the hook URL uses a fixed port (47913).
+   - `Stop` includes `last_assistant_message` and `background_tasks`.
+   - `StopFailure` has `error` (for example `rate_limit`) but no reset time.
+   - `Notification` has `notification_type` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`, `agent_needs_input`, ...).
+   - `additionalContext` is returned via `hookSpecificOutput`.
+6. **tmux keystrokes:** Esc interrupts, and digits followed by Enter answer numbered dialogs. Peek strips the input box and status bar.
+7. **Built-in peer messaging:** not used. Channels plus the launcher are sufficient and documented.
+8. **A real stop vs a waiting stop:** `background_tasks` on the `Stop` hook. DONE is skipped while it's non-empty, and sent after the session's later, final stop.
 9. **Provider specifics:**
-   - Telnyx: can the account public key be fetched by API, or must the user paste it? What are the exact field names for opt-out and cost events?
-   - Both providers: which keywords are intercepted, and is the message still delivered to the webhook?
+   - Telnyx signs `timestamp|rawBody` with Ed25519. Its public key comes from the portal; both raw 32-byte and SPKI base64 keys are accepted.
+   - A number must be assigned to a messaging profile before it can send.
+   - Opt-out keywords are handled by the provider. The hub never uses them as commands and flags them if the owner sends one.
 10. **Installer:**
-    - Does `claude plugin install sms --marketplace <repo>` work non-interactively from `install.sh`?
-    - How does the installer find the installed plugin path to write `install.json`?
-    - Does a freshly installed plugin's skill or command appear without a restart?
-    - Does the plugin cache contain the whole repo when the marketplace source is `./`?
+    - `claude plugin install sms --marketplace <repo>` works non-interactively.
+    - `claude plugin list --json` gives `installPath`.
+    - The repo-root plugin (`"source": "./"`) is copied whole into `~/.claude/plugins/cache/...`.
+    - **macOS privacy:** a launchd service can't read files under `~/Desktop`, `~/Documents` or `~/Downloads`, and hangs instead. Setup and doctor detect this.
 
-## 16. Build phases
+## 16. Build status
 
-| Phase | Deliverable | Useful on its own? |
-|---|---|---|
-| P0 | Spike the unknowns in section 15 | - |
-| P1 | Hub, SQLite, config loader, allowlist, fake provider + **Telnyx send**, HTTP hooks: DONE / failure / ended texts, modes, budget, GSM-7 converter. Config written by hand for now. | Yes: "text me when it's done" |
-| P2 | Bridge channel server, session registry, quick tunnel with automatic webhook update, **Telnyx inbound** (signature, messaging profile), fast-path parser, `@`/number routing, sticky target, capture mode, `status` | Yes: two-way |
-| P3 | Router and summarizer via `claude -p`, natural language, clarify flow, mode-change notices, `sms-updates` skill, `model` command | - |
-| P4 | `ccsms claude` launcher + tmux: peek, halt, on-screen answers, starting and resuming sessions, reboot recovery | - |
-| P5 | `install.sh`, `ccsms setup`/`login`/`doctor`/`uninstall`, `setup` skill, service install (launchd/systemd), **Twilio adapter**, secret scrubber, auto-home, docs and README | Public release |
+All phases (P0–P5) are implemented in v0.1.0:
+- **P0:** spike.
+- **P1:** hub, hooks and DONE.
+- **P2:** bridge, inbound, tunnel and Telnyx.
+- **P3:** dispatcher and summarizer.
+- **P4:** tmux launcher, peek/halt/spawn/resume.
+- **P5:** installer, setup, doctor, service, Twilio, docs.
 
-**Testing:**
-- unit tests for the parser, allowlist, policy and budget, segment counter, GSM-7 converter, and each provider's signature verification;
-- recorded router fixtures, so routing regressions don't need live model calls;
-- the fake provider for end-to-end runs;
-- provider sandboxes where they exist;
-- CI runs the unit and fake end-to-end tests.
+Verified end to end with real Claude Code sessions and the fake provider:
+- texts delivered into idle and busy sessions;
+- DONE texts, including no DONE while a background shell runs;
+- dispatcher routing;
+- `sms_ask` with numbered answers;
+- multi-text capture;
+- peek, halt, and starting a session by text.
+
+Tests:
+- `bun test`: unit and hub-behavior tests, no network.
+- `bun test/router.live.ts`: live dispatcher eval.
